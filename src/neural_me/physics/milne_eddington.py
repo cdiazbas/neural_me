@@ -16,7 +16,7 @@ class MilneEddington(nn.Module):
     def stokesSyn(self, param, x, B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1):
         
         # Pi square factor:
-        sqrtpi = 1. / 1.7724538509055160272981674833411451827975494561223871282138077898 # sqrt(pi)
+        sqrtpi = 1. / 1.7724538509055160 # sqrt(pi)
 
         # Magnetic field direction:
         singamma = torch.sin(gamma)
@@ -26,9 +26,6 @@ class MilneEddington(nn.Module):
 
         # Calculating the Zeeman Pattern
         # Param structure: [[dpi, dsr, dsb], [spi, ssr, ssb],meta]
-        # These are lists of arrays/tensors? usually shapes like (1, n_comp)
-        # We need to ensure they are tensors on the correct device/dtype
-        
         dpi_0, dsr_0, dsb_0 = param[0]
         spi_0, ssr_0, ssb_0 = param[1]
         l0 = param[2][7]
@@ -38,117 +35,142 @@ class MilneEddington(nn.Module):
         dpi_0 = dpi_0.to(device); dsr_0 = dsr_0.to(device); dsb_0 = dsb_0.to(device)
         spi_0 = spi_0.to(device); ssr_0 = ssr_0.to(device); ssb_0 = ssb_0.to(device)
 
-        # Lorentz factor
+        # Lorentz factor & vlosA
         lB = 4.67E-13 * l0**2. * B # shape (batch, 1)
+        cc = 3.0E+5
+        vlosA = l0 * vlos / cc # shape (batch, 1)
 
         # Apply Lorentz factor to splittings
-        # splitting shapes: (1, n_comp) -> (batch, n_comp) after * (batch, 1)
         dpi = dpi_0 * lB
         dsr = dsr_0 * lB
         dsb = dsb_0 * lB
-
-        # VLOS: km2A
-        cc = 3.0E+5        # veloc luz [km/s]
-        vlosA = l0 * vlos / cc # shape (batch, 1)
-
-        # x shape: (batch, n_lambda)
-        # We want to broadcast everything to (batch, n_lambda, n_comp)
         
-        # Reshape inputs for broadcasting
-        # x: (batch, n_lambda, 1)
+        # ============================================
+        # Single fvoigt Call Optimization
+        # ============================================
+        
+        # Concatenate shifts and strengths
+        # dpi, dsr, dsb: (batch, n_comp_p), (batch, n_comp_r), (batch, n_comp_b)
+        shifts = torch.cat([dpi, dsr, dsb], dim=1) # (batch, total_comp)
+        
+        # spi_0, ssr_0, ssb_0: (1, n_comp) -> broadcast to (batch, n_comp)
+        batch_size = B.shape[0]
+        # strengths = torch.cat([spi_0, ssr_0, ssb_0], dim=1) # (1, total_comp)
+        
+        # Prepare inputs for broadcasting
+        # x: (batch, n_lambda) -> (batch, n_lambda, 1)
         x_in = x.unsqueeze(-1)
-        # ddop: (batch, 1, 1)
-        ddop_in = ddop.unsqueeze(-1)
-        # vlosA: (batch, 1, 1)
+        # shifts: (batch, total_comp) -> (batch, 1, total_comp)
+        shifts_in = shifts.unsqueeze(1)
+        # vlosA: (batch, 1) -> (batch, 1, 1)
         vlosA_in = vlosA.unsqueeze(-1)
-        # a: (batch, 1, 1)
+        # ddop: (batch, 1) -> (batch, 1, 1)
+        ddop_in = ddop.unsqueeze(-1)
+        # a: (batch, 1) -> (batch, 1, 1)
         a_in = a.unsqueeze(-1)
         
-        # Prepare splittings: (batch, 1, n_comp)
-        dpi_in = dpi.unsqueeze(1)
-        dsr_in = dsr.unsqueeze(1)
-        dsb_in = dsb.unsqueeze(1)
+        # Compute profiles for ALL components at once
+        # xx: (batch, n_lambda, total_comp)
+        xx = (x_in - shifts_in - vlosA_in) / ddop_in
+        H_all, F_all = fvoigt(a_in, xx)
         
-        # Prepare strengths: (1, 1, n_comp)
-        # spi_0 is (1, n_comp). 
-        # We need (1, 1, n_comp).
-        spi_in = spi_0.unsqueeze(1)
-        ssr_in = ssr_0.unsqueeze(1)
-        ssb_in = ssb_0.unsqueeze(1)
+        # Split results back
+        # We need the number of components for each part
+        n_p = dpi.shape[1]
+        n_r = dsr.shape[1]
+        n_b = dsb.shape[1]
         
-
-        # ============================================
-        # Profiles absorption and dispersion - VECTORIZED
-
-        # Function to compute eta/rho for a set of components
-        def compute_profile(shifts, strengths):
-            # xx: (batch, n_lambda, n_comp)
-            xx = (x_in - shifts - vlosA_in) / ddop_in
-            
-            # fvoigt handles broadcasting: (batch, n_lambda, n_comp)
-            H, F = fvoigt(a_in, xx) 
-            
-            # Sum over components (last dim)
-            # H * strengths: (batch, n_lambda, n_comp)
-            # sum -> (batch, n_lambda)
-            # Sum over components (last dim)
-            # H * strengths: (batch, n_lambda, n_comp)
-            # sum -> (batch, n_lambda)
-            # ddop is (batch, 1), unsqueezed it was (batch, 1, 1). 
-            # We want to divide by ddop (batch, 1). 
-            # ddop_in is (batch, 1, 1). squeeze(-1) makes it (batch, 1). 
-            # This should work.
-            # Double check shapes:
-            # H: (batch, n_lambda, n_comp)
-            # strengths: (1, 1, n_comp)
-            
-            term1 = torch.sum(H * strengths, dim=-1) 
-            term2 = torch.sum(2. * F * strengths, dim=-1)
-            
-            # term1 is (batch, n_lambda)
-            # ddop is (batch, 1)
-            
-            eta = term1 * sqrtpi / ddop
+        # Split across last dimension (components)
+        H_p, H_r, H_b = torch.split(H_all, [n_p, n_r, n_b], dim=-1)
+        F_p, F_r, F_b = torch.split(F_all, [n_p, n_r, n_b], dim=-1)
+        
+        # Compute eta/rho components
+        # strengths are needed for each part. strengths tensor was (1, total_comp).
+        # We can split it too or just use the original _,_0 variables.
+        # strengths needed shape: (1, 1, n_comp) for broadcasting
+        
+        def reduce_comp(H, F, s):
+            # s: (1, n_comp) -> (1, 1, n_comp)
+            s_in = s.unsqueeze(1) 
+            term1 = torch.sum(H * s_in, dim=-1) 
+            term2 = torch.sum(2. * F * s_in, dim=-1)
+            eta = term1 * sqrtpi / ddop # (batch, n_lambda)
             rho = term2 * sqrtpi / ddop
             return eta, rho
 
-        eta_p, rho_p = compute_profile(dpi_in, spi_in)
-        eta_b, rho_b = compute_profile(dsb_in, ssb_in)
-        eta_r, rho_r = compute_profile(dsr_in, ssr_in)
+        eta_p, rho_p = reduce_comp(H_p, F_p, spi_0)
+        eta_r, rho_r = reduce_comp(H_r, F_r, ssr_0)
+        eta_b, rho_b = reduce_comp(H_b, F_b, ssb_0)
 
         # ============================================
-        # Propagation Matrix Elements
+        # Vector Algebra for Stokes Q, U, V
+        # ============================================
 
         # 1.- Absorption Element
-        # Shapes: eta_p, eta_b, eta_r are (batch, n_lambda)
-        # sin/cos factors are (batch, 1) -> broadcast ok
-        
         eta_I = 1.0 + 0.5 * eta0 * \
             (eta_p * (singamma**2.) + 0.5 * (eta_b + eta_r) * (1. + cosgamma**2.))
         
-        # 2.- Dichroism Elements
-        eta_Q = 0.5 * eta0 * (eta_p - 0.5 * (eta_b + eta_r)) * (singamma**2.) * cos2xi
-        eta_U = 0.5 * eta0 * (eta_p - 0.5 * (eta_b + eta_r)) * (singamma**2.) * sin2xi
-        eta_V = 0.5 * eta0 * (eta_r - eta_b) * cosgamma
+        # Common terms
+        diff_eta = 0.5 * eta0 * (eta_p - 0.5 * (eta_b + eta_r)) * (singamma**2.)
+        diff_rho = 0.5 * eta0 * (rho_p - 0.5 * (rho_b + rho_r)) * (singamma**2.)
         
-        # 3.- Dispersion Elements
-        rho_Q = 0.5 * eta0 * (rho_p - 0.5 * (rho_b + rho_r)) * (singamma**2.) * cos2xi
-        rho_U = 0.5 * eta0 * (rho_p - 0.5 * (rho_b + rho_r)) * (singamma**2.) * sin2xi
-        rho_V = 0.5 * eta0 * (rho_r - rho_b) * cosgamma
-
+        # Construct vectors eta_vec and rho_vec for (Q, U, V) components
+        # eta_Q = diff_eta * cos2xi
+        # eta_U = diff_eta * sin2xi
+        # eta_V = 0.5 * eta0 * (eta_r - eta_b) * cosgamma
+        
+        # rho_Q = diff_rho * cos2xi
+        # rho_U = diff_rho * sin2xi
+        # rho_V = 0.5 * eta0 * (rho_r - rho_b) * cosgamma
+        
+        # Stack to form vectors (last dim size 3)
+        # shapes: (batch, n_lambda)
+        eta_V_term = 0.5 * eta0 * (eta_r - eta_b) * cosgamma
+        rho_V_term = 0.5 * eta0 * (rho_r - rho_b) * cosgamma
+        
+        # (batch, n_lambda, 3)
+        # Note: eta_vec is constructed to match (Q, U, V) contributions order
+        eta_vec = torch.stack([diff_eta * cos2xi, diff_eta * sin2xi, eta_V_term], dim=-1)
+        rho_vec = torch.stack([diff_rho * cos2xi, diff_rho * sin2xi, rho_V_term], dim=-1)
+        
+        # Vector operations
+        # dot product: sum(a*b, dim=-1) -> (batch, n_lambda, 1) (keep dim for broadcasting if needed)
+        eta_sq_sum = torch.sum(eta_vec**2, dim=-1)      # |eta|^2
+        rho_sq_sum = torch.sum(rho_vec**2, dim=-1)      # |rho|^2
+        eta_dot_rho = torch.sum(eta_vec * rho_vec, dim=-1)
+        
+        # Cross product: eta x rho
+        cross_prod = torch.linalg.cross(eta_vec, rho_vec, dim=-1)
+        
         # Matrix Solution (analytical)
-        Det = eta_I**2. * (eta_I**2. - eta_Q**2. - eta_U**2. - eta_V**2. + rho_Q**2. +
-                           rho_U**2. + rho_V**2.) - (eta_Q * rho_Q + eta_U * rho_U + eta_V * rho_V)**2.
-        
+        # Det = eta_I^2 * (eta_I^2 - |eta|^2 + |rho|^2) - (eta . rho)^2
+        Det = eta_I**2 * (eta_I**2 - eta_sq_sum + rho_sq_sum) - eta_dot_rho**2
         IDet = 1. / Det
         
         # Source function terms: S_0, S_1 are (batch, 1)
         term_S1 = IDet * S_1
         
-        I = S_0 + term_S1 * eta_I * (eta_I**2. + rho_Q**2. + rho_U**2. + rho_V**2.)
-        Q = -term_S1 * (eta_I**2. * eta_Q + eta_I * (eta_V * rho_U - eta_U * rho_V) + rho_Q * (eta_Q * rho_Q + eta_U * rho_U + eta_V * rho_V))
-        U = -term_S1 * (eta_I**2. * eta_U + eta_I * (eta_Q * rho_V - eta_V * rho_Q) + rho_U * (eta_Q * rho_Q + eta_U * rho_U + eta_V * rho_V))
-        V = -term_S1 * (eta_I**2. * eta_V + eta_I * (eta_U * rho_Q - eta_Q * rho_U) + rho_V * (eta_Q * rho_Q + eta_U * rho_U + eta_V * rho_V))
+        # I = S_0 + term_S1 * eta_I * (eta_I^2 + |rho|^2)
+        I = S_0 + term_S1 * eta_I * (eta_I**2 + rho_sq_sum)
+        
+        # QUV vector calculation
+        # Formula derived from legacy scalar equations: 
+        # Vec = -term_S1 * ( eta_I^2 * eta_vec - eta_I * cross_prod + (eta . rho) * rho_vec )
+        
+        # Broadcast scalars to (batch, n_lambda, 1)
+        eta_I_uns = eta_I.unsqueeze(-1)
+        eta_dot_rho_uns = eta_dot_rho.unsqueeze(-1)
+        
+        QUV_vec = -term_S1.unsqueeze(-1) * (
+            (eta_I_uns**2) * eta_vec - 
+            eta_I_uns * cross_prod + 
+            eta_dot_rho_uns * rho_vec
+        )
+        
+        # Unpack Q, U, V
+        Q = QUV_vec[..., 0]
+        U = QUV_vec[..., 1]
+        V = QUV_vec[..., 2]
 
         return I, Q, U, V
     
