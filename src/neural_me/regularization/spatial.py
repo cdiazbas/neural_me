@@ -94,3 +94,33 @@ def target_value_regularization(field_map: torch.Tensor, target_val: float) -> t
     Equivalent to regu_value in legacy code.
     """
     return torch.sum(torch.abs(field_map - target_val))
+
+def smoothness_loss_param(
+    param: torch.Tensor, 
+    grid_shape: tuple, 
+    penalty: str = 'l2'
+) -> torch.Tensor:
+    """
+    Convenience wrapper for smoothness_loss on a flat parameter tensor.
+    
+    Equivalent to regu2_param in legacy code.
+    
+    Args:
+        param: 1D tensor of shape (Ny*Nx,) representing a single parameter
+        grid_shape: Tuple (Ny, Nx) for reshaping
+        penalty: 'l1' or 'l2'
+        
+    Returns:
+        Scalar loss tensor
+    """
+    ny, nx = grid_shape
+    field_map = param.view(1, 1, ny, nx)
+    return smoothness_loss(field_map, penalty=penalty)
+
+def max_value_regularization(field_map: torch.Tensor, max_val: float) -> torch.Tensor:
+    """
+    Penalizes values above a certain threshold.
+    Equivalent to regu_max in legacy code.
+    """
+    return torch.sum(F.relu(field_map - max_val))
+

@@ -211,3 +211,133 @@ class MEProblem:
             }
             
         return loss
+
+
+class MultiMEProblem:
+    """
+    Multi-instrument inversion problem for stereoscopic observations.
+    
+    Manages multiple MEProblem instances and computes a combined loss function.
+    Works together with StereoscopicParameterModel for coupled inversions.
+    
+    Features:
+    1. Weighted combination of losses from each instrument
+    2. Optional stray light calibration (applied to specified instrument)
+    3. Shared convergence tracking
+    """
+    
+    def __init__(
+        self,
+        problems: List[MEProblem],
+        weights: Optional[List[float]] = None,
+        cali_instrument: int = -1
+    ):
+        """
+        Initialize MultiMEProblem.
+        
+        Args:
+            problems: List of MEProblem instances, one per instrument
+            weights: Weight for each instrument's loss (default: equal weights)
+            cali_instrument: Index of instrument to apply stray light calibration (-1 = none)
+        """
+        self.problems = problems
+        self.n_problems = len(problems)
+        
+        if weights is None:
+            weights = [1.0] * self.n_problems
+        self.weights = weights
+        
+        self.cali_instrument = cali_instrument
+        self.device = problems[0].device
+    
+    def compute_loss(
+        self,
+        atmospheres: List[Atmosphere],
+        cali: Optional[torch.Tensor] = None,
+        return_breakdown: bool = False
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, float]]]:
+        """
+        Compute combined loss from all instruments.
+        
+        Args:
+            atmospheres: List of Atmosphere objects (one per problem)
+            cali: Optional calibration factor tensor (for stray light correction)
+            return_breakdown: If True, return per-instrument breakdown
+            
+        Returns:
+            Combined loss (and optional breakdown dict)
+        """
+        assert len(atmospheres) == self.n_problems, \
+            f"Expected {self.n_problems} atmospheres, got {len(atmospheres)}"
+        
+        total_loss = torch.tensor(0.0, device=self.device)
+        breakdown = {}
+        
+        for i, (prob, atm, w) in enumerate(zip(self.problems, atmospheres, self.weights)):
+            # Apply stray light calibration if applicable
+            # This would require modifying the forward model output, not the atmosphere
+            # For now, compute loss without calibration (calibration handled externally)
+            
+            loss_i, bd_i = prob.compute_loss(atm, return_breakdown=True)
+            weighted_loss = w * loss_i
+            total_loss += weighted_loss
+            
+            breakdown[f'instrument_{i}'] = {
+                'loss': loss_i.item(),
+                'weighted_loss': weighted_loss.item(),
+                **{f'{k}_{i}': v for k, v in bd_i.items()}
+            }
+        
+        breakdown['total'] = total_loss.item()
+        
+        if return_breakdown:
+            return total_loss, breakdown
+        return total_loss
+    
+    def compute_forward_models(
+        self,
+        atmospheres: List[Atmosphere]
+    ) -> List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
+        """
+        Run forward models for all instruments.
+        
+        Returns:
+            List of (I, Q, U, V) tuples, one per instrument
+        """
+        results = []
+        for prob, atm in zip(self.problems, atmospheres):
+            results.append(prob.compute_forward_model(atm))
+        return results
+    
+    def apply_calibration(
+        self,
+        stokes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+        cali: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Apply stray light calibration to Stokes profiles.
+        
+        Models stray light as: I_out = (1 - α) * I_in + α * <I_in>
+        
+        Args:
+            stokes: Tuple of (I, Q, U, V) tensors
+            cali: Calibration factor α in [0, 1]
+            
+        Returns:
+            Calibrated (I, Q, U, V)
+        """
+        I, Q, U, V = stokes
+        
+        # Mean over all pixels (dim=0) for each wavelength
+        I_mean = I.mean(dim=0, keepdim=True)
+        Q_mean = Q.mean(dim=0, keepdim=True)
+        U_mean = U.mean(dim=0, keepdim=True)
+        V_mean = V.mean(dim=0, keepdim=True)
+        
+        I_cal = (1 - cali) * I + cali * I_mean
+        Q_cal = (1 - cali) * Q + cali * Q_mean
+        U_cal = (1 - cali) * U + cali * U_mean
+        V_cal = (1 - cali) * V + cali * V_mean
+        
+        return I_cal, Q_cal, U_cal, V_cal
+
