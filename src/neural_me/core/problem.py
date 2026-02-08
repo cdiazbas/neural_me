@@ -48,6 +48,20 @@ class MEProblem:
         self.model = MilneEddington(nlinea=nlinea)
         self.model.to(self.device)
         
+        # Parameter normalization weights (for scaling normalized [0,1] params to physical units)
+        # These values were empirically optimized in neural_me_legacy
+        self.normalization = {
+            'B': 500.0,      # Magnetic field (G): [0,1] → [0, 500 G]
+            'gamma': 1.0,    # Inclination (rad): [0,1] → [0, π]
+            'xi': 1.0,       # Azimuth (rad): [0,1] → [0, 2π]
+            'vlos': 2.0,     # Velocity (km/s): [0,1] → [0, 2 km/s]
+            'eta0': 100.0,   # Line-to-continuum ratio: [0,1] → [0, 100]
+            'a': 0.2,        # Damping parameter: [0,1] → [0, 0.2]
+            'ddop': 1.0,     # Doppler width (Å): [0,1] → [0, 1 Å]
+            'S0': 1.0,       # Source function (continuum): [0,1] → [0, 1]
+            'S1': 1.0        # Source function (gradient): [0,1] → [0, 1]
+        }
+        
         # Loss Weights
         self.weights = torch.tensor(weights, device=self.device, dtype=torch.float32)
 

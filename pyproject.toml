@@ -1,6 +1,7 @@
 [build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
+requires = ["setuptools>=61.0", "wheel", "cython>=0.29", "numpy>=1.20"]
+build-backend = "build_backend"
+backend-path = ["."]
 
 [project]
 name = "neural_me"
@@ -27,6 +28,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "black", "flake8", "jupyter", "pytest-cov", "ipython"]
+cpp = ["cython>=0.29", "numpy>=1.20"]
 
 [project.urls]
 "Homepage" = "https://github.com/cdiazbas/neural_me"

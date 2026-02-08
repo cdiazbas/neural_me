@@ -147,10 +147,6 @@ def paramLine(nlinea):
     current_dir = os.path.dirname(os.path.abspath(__file__))
     lineas_path = os.path.join(current_dir, 'LINEAS.txt')
     
-    # If not found there, try the legacy location as fallback (for smooth transition)
-    if not os.path.exists(lineas_path):
-         lineas_path = '/mn/stornext/d20/RoCS/carlosjd/projects/SUNTORCH/NEURALME/neural_me_legacy/milne_simple_version/LINEAS.txt'
-
     ju, lu, su, jl, ll, sl, elem, l0, datos = extrae(lineas_path, lineaToFind)
     [dpi, dsr, dsb], [spi, ssr, ssb] = pattern(ju, lu, su, jl, ll, sl)
 
@@ -176,8 +172,69 @@ def paramLine(nlinea):
 
     return [[torch.tensor(dpi)[None,:], torch.tensor(dsr)[None,:], torch.tensor(dsb)[None,:]], [torch.tensor(spi)[None,:], torch.tensor(ssr)[None,:], torch.tensor(ssb)[None,:]], [ju, lu, su, jl, ll, sl, elem, l0, gu, gl, gef]]
 
-def fvoigt(damp, vv):
-    # Ensure constants matches the device and dtype of input tensors
+def fvoigt_humlicek(damp, vv):
+    """
+    Humlicek's 4-region Voigt approximation (matches C++ backend exactly).
+    More accurate than Hui's method, especially in line core.
+    """
+    device = damp.device
+    dtype = damp.dtype
+    
+    # Ensure inputs are complex-compatible
+    a = damp.float()
+    v = vv.float()
+    
+    # Compute sav = |v| + a for region selection
+    sav = torch.abs(v) + a
+    
+    # Complex argument: tav = a - i*v
+    tav = torch.complex(a, -v)
+    uav = tav * tav
+    
+    # Initialize output
+    w4 = torch.zeros_like(tav)
+    
+    # Region 1: Far wings (sav >= 15)
+    mask1 = sav >= 15.0
+    if mask1.any():
+        w4_1 = tav * 0.5641896 / (0.5 + uav)
+        w4 = torch.where(mask1, w4_1, w4)
+    
+    # Region 2: Intermediate (5.5 <= sav < 15)
+    mask2 = (sav >= 5.5) & (sav < 15.0)
+    if mask2.any():
+        w4_2 = tav * (1.410474 + uav * 0.5641896) / (0.75 + uav * (3.0 + uav))
+        w4 = torch.where(mask2, w4_2, w4)
+    
+    # Region 3: Near core (a >= 0.195*|v| - 0.176 and sav < 5.5)
+    mask3 = (a >= (0.195 * torch.abs(v) - 0.176)) & (sav < 5.5)
+    if mask3.any():
+        # 4th order rational approximation
+        num = (16.4955 + tav * (20.20933 + tav * (11.96482 + tav * (3.778987 + tav * 0.5642236))))
+        den = (16.4955 + tav * (38.82363 + tav * (39.27121 + tav * (21.69274 + tav * (6.699398 + tav)))))
+        w4_3 = num / den
+        w4 = torch.where(mask3, w4_3, w4)
+    
+    # Region 4: Core (default, sav < 5.5 and a < 0.195*|v| - 0.176)
+    mask4 = ~(mask1 | mask2 | mask3)
+    if mask4.any():
+        # 6th order polynomial with exponential
+        num = tav * (36183.31 - uav * (3321.9905 - uav * (1540.787 - uav * (219.0313 - uav * (35.76683 - uav * (1.320522 - uav * 0.56419))))))
+        den = (32066.6 - uav * (24322.84 - uav * (9022.228 - uav * (2186.181 - uav * (364.2191 - uav * (61.57037 - uav * (1.841439 - uav)))))))
+        w4_4 = torch.exp(uav) - num / den
+        w4 = torch.where(mask4, w4_4, w4)
+    
+    # Extract H and F (Faraday-Voigt)
+    h = torch.real(w4)
+    f = torch.imag(w4) * 0.5
+    
+    return [h, f]
+
+def fvoigt_hui(damp, vv):
+    """
+    Hui's single rational approximation (original PyTorch implementation).
+    Faster but less accurate than Humlicek's method.
+    """
     device = damp.device
     dtype = damp.dtype
 
@@ -189,11 +246,6 @@ def fvoigt(damp, vv):
          348.703917719495792, 170.354001821091472, 53.992906912940207,
          10.479857114260399, 1.], device=device, dtype=dtype)
 
-    # z = (damp * torch.ones(vv.shape[-1]) + -torch.abs(vv) * 1j)
-    # Optimized: allow broadcasting. damp should be compatible with vv.
-    # z = damp + -torch.abs(vv) * 1j
-    # Inductor fix: construct complex tensor explicitly to avoid potential type inference issues
-    # Force float32 to avoid Double/Float mismatch in Inductor
     z = torch.complex(damp.float(), -torch.abs(vv).float())
 
     Z = ((((((A[6] * z + A[5]) * z + A[4]) * z + A[3]) * z + A[2]) * z + A[1]) * z + A[0]) /\
@@ -203,3 +255,22 @@ def fvoigt(damp, vv):
     f = torch.sign(vv) * torch.imag(Z) * 0.5
 
     return [h, f]
+
+def fvoigt(damp, vv, method="hui"):
+    """
+    Compute Voigt and Faraday-Voigt profiles.
+    
+    Args:
+        damp: Damping parameter (a)
+        vv: Velocity/frequency parameter (v)
+        method: "humlicek" (default, accurate, matches C++) or "hui" (fast)
+    
+    Returns:
+        [H, F]: Voigt profile H and Faraday-Voigt profile F
+    """
+    if method == "humlicek":
+        return fvoigt_humlicek(damp, vv)
+    elif method == "hui":
+        return fvoigt_hui(damp, vv)
+    else:
+        raise ValueError(f"Unknown method: {method}. Use 'humlicek' or 'hui'")

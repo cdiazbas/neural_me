@@ -24,6 +24,13 @@ class PixelSolver:
         problem: MEProblem,
         device: Optional[torch.device] = None
     ):
+        """
+        Initialize the PixelSolver.
+        
+        Args:
+            problem: MEProblem instance (contains normalization weights)
+            device: Torch device for computation
+        """
         self.problem = problem
         self.device = device if device else problem.device
         
@@ -31,7 +38,8 @@ class PixelSolver:
         self.n_pixels = self.problem.obs.n_pixels
         self.grid_shape = self.problem.obs.grid_shape
         
-        # Parameters: (N_pixels, 9)
+        # Parameters: (N_pixels, 9) - NORMALIZED values in [0, 1]
+        # These will be scaled by problem.normalization weights to get physical units
         self.params = torch.full(
             (self.n_pixels, 9), 
             0.5, 
@@ -43,6 +51,9 @@ class PixelSolver:
     def initialize_parameters(self, method: str = 'default'):
         """
         Initialize parameters intelligently.
+        
+        All values are NORMALIZED (typically in [0, 1] range).
+        They will be scaled by self.normalization weights to get physical units.
         """
         with torch.no_grad():
             if method == 'zeros':
@@ -51,30 +62,30 @@ class PixelSolver:
                 self.params.fill_(0.5) 
                 self.params.add_(torch.randn_like(self.params) * 0.01)
             elif method == 'default':
-                # Legacy initialization values (Physical approximations)
-
-                # B (0.5 kG)
-                self.params[:, 0] = 0.5 
-                # Gamma (1.0 rad)
-                self.params[:, 1] = 1.0
-                # Xi (1.0 rad)
-                self.params[:, 2] = 1.0
-                # Vlos (0.0 km/s)
+                # Initialize with reasonable normalized values
+                # Physical values: B=250G, gamma=π/2, xi=π, vlos=0, eta0=50, a=0.1, ddop=0.02, S0=0.5, S1=0.5
+                
+                # B: 500 G / 500 G = 1.0
+                self.params[:, 0] = 1.0
+                # Gamma: 0.5 / 1.0 = 0.5
+                self.params[:, 1] = 0.5
+                # Xi: 0.5 / 1.0 = 0.5
+                self.params[:, 2] = 0.5
+                # Vlos: 0.0 km/s / 2.0 km/s = 0.0
                 self.params[:, 3] = 0.0
-                # Eta0 (50.0)
-                self.params[:, 4] = 50.0
-                # a (0.2)
-                self.params[:, 5] = 0.2
-                # Ddop (0.02)
+                # Eta0: 50.0 / 100.0 = 0.5
+                self.params[:, 4] = 0.5
+                # a: 0.1 / 0.2 = 0.5
+                self.params[:, 5] = 0.5
+                # Ddop: 0.02 / 1.0 = 0.02
                 self.params[:, 6] = 0.02
-                # S0 (0.5)
+                # S0: 0.5 / 1.0 = 0.5
                 self.params[:, 7] = 0.5
-                # S1 (0.5)
+                # S1: 0.5 / 1.0 = 0.5
                 self.params[:, 8] = 0.5
                 
                 self.params.requires_grad = True
-
-            
+        
     def solve(
         self,
         n_iterations: int = 100,
@@ -97,11 +108,10 @@ class PixelSolver:
             optimizer.zero_grad()
             
             # 1. Create Atmosphere from current parameters 
-            # We treat params as the normalized values directly.
-            normalized_params = self.params
-            
+            # Params are normalized [0,1], scaled by problem.normalization
             atmosphere = Atmosphere(
-                normalized_params,
+                self.params,
+                parameter_weights=self.problem.normalization,
                 grid_shape=self.grid_shape
             )
             

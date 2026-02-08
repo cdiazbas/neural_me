@@ -166,3 +166,7 @@ notebooks*
 docs*
 log*
 .DS_Store
+
+# External dependencies artifacts
+external/pyMilne/pyMilne.cpp
+external/pyMilne/__pycache__/

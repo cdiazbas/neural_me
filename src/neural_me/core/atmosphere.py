@@ -54,7 +54,8 @@ class Atmosphere:
         self._params_norm = params
         self.grid_shape = grid_shape
         
-        # Default Weights (Scaling factors)        
+        # Default Weights (Scaling factors for normalization)
+        # By default, no scaling (all 1.0). Actual normalization is defined in MEProblem.
         self.weights = {
             'B': 1.0,
             'gamma': 1.0,
