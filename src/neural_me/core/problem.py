@@ -6,6 +6,7 @@ from typing import Optional, List, Tuple, Union, Dict
 from neural_me.core.observation import Observation
 from neural_me.core.atmosphere import Atmosphere
 from neural_me.physics.milne_eddington import MilneEddington
+from neural_me.regularization.spatial import smoothness_loss
 
 class MEProblem:
     """
@@ -22,6 +23,7 @@ class MEProblem:
         nlinea: int = 4, 
         weights: List[float] = [1.0, 1.0, 1.0, 1.0], 
         loss_type: str = 'mse',
+        regularization_weights: Optional[Dict[str, float]] = None,
         device: Optional[torch.device] = None
     ):
         """
@@ -29,11 +31,14 @@ class MEProblem:
             observation: The observed data.
             nlinea: Index for parameter line configuration.
             weights: Loss weights for [Stokes I, Q, U, V].
-            loss_type: 'mse' (Mean Squared Error) or 'l1' (Mean Absolute Error).
+            loss_type: 'mse' or 'l1'.
+            regularization_weights: Dict mapping parameter names (or 'all') to spatial smoothing weights.
+                                    Example: {'all': 1e-3} or {'B': 1e-2, 'vlos': 1e-3}.
         """
         self.obs = observation
         self.device = device if device else observation.device
         self.loss_type = loss_type.lower()
+        self.regularization_weights = regularization_weights
         
         # Ensure obs is on device
         if self.obs.device != self.device:
@@ -45,13 +50,61 @@ class MEProblem:
         
         # Loss Weights
         self.weights = torch.tensor(weights, device=self.device, dtype=torch.float32)
+
+    def _compute_regularization(self, atmosphere: Atmosphere) -> torch.Tensor:
+        """Computes spatial regularization loss."""
+        if not self.regularization_weights:
+            return torch.tensor(0.0, device=self.device)
+
+        # We need the full grid for spatial regularization
+        # If atmosphere is a subset (indices passed to compute_loss), spatial reg might be invalid
+        # BUT PixelSolver passes the FULL atmosphere usually.
+        # If compute_loss received indices, we probably shouldn't compute spatial reg on the subset 
+        # unless it's a contiguous patch. 
+        # For now, assume atmosphere has grid_shape populated if we want spatial reg.
         
+        if atmosphere.grid_shape is None:
+            return torch.tensor(0.0, device=self.device)
+            
+        reg_loss = torch.tensor(0.0, device=self.device)
+        
+        # Parameters to regularize
+        # Atmosphere has 9 params.
+        # We can key them by name.
+        param_names = ['B', 'gamma', 'xi', 'vlos', 'eta0', 'a', 'ddop', 'S0', 'S1']
+        
+        # Get stack: (Ny, Nx, 9)
+        stack = atmosphere.to_stack() 
+        if stack.dim() != 3: # Expect 2D map + params dim
+             # Possibly (Batch, Ny, Nx, 9) ?
+             if stack.dim() == 4:
+                 pass # OK
+             else:
+                 return torch.tensor(0.0, device=self.device)
+
+        # Reshape to (C, Ny, Nx) or (Batch, C, Ny, Nx) for smoothness_loss
+        # stack is (..., Ny, Nx, 9) -> permute to (..., 9, Ny, Nx)
+        stack_perm = stack.permute(0, 3, 1, 2) if stack.dim() == 4 else stack.permute(2, 0, 1)
+        
+        # Global weight
+        if 'all' in self.regularization_weights:
+            w = self.regularization_weights['all']
+            reg_loss += w * smoothness_loss(stack_perm, penalty=self.loss_type)
+            
+        # Specific weights
+        for i, name in enumerate(param_names):
+            if name in self.regularization_weights:
+                w = self.regularization_weights[name]
+                # Slice specific channel
+                param_map = stack_perm[..., i, :, :]
+                reg_loss += w * smoothness_loss(param_map, penalty=self.loss_type)
+                
+        return reg_loss
+
     def compute_forward_model(self, atmosphere: Atmosphere) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Runs the forward physics model on the given atmosphere.
-        
-        Returns:
-            (I, Q, U, V) tensors of shape (..., n_lambda)
+        Returns: (I, Q, U, V) tensors of shape (..., n_lambda)
         """
         # Get physical parameters stack [B, gamma, xi, vlos, eta0, a, ddop, S0, S1]
         params = atmosphere.to_stack() # Shape (..., 9)
@@ -125,13 +178,22 @@ class MEProblem:
                 self.weights[1] * err_Q + 
                 self.weights[2] * err_U + 
                 self.weights[3] * err_V)
+        
+        # 6. Regularization
+        reg_loss = torch.tensor(0.0, device=self.device)
+        if self.regularization_weights and indices is None: 
+            # Only compute reg if we are processing the full grid/frame
+            # otherwise spatial topology is lost or incomplete
+            reg_loss = self._compute_regularization(atmosphere)
+            loss += reg_loss
                 
         if return_breakdown:
             return loss, {
                 'loss_I': err_I.item(),
                 'loss_Q': err_Q.item(),
                 'loss_U': err_U.item(),
-                'loss_V': err_V.item()
+                'loss_V': err_V.item(),
+                'loss_reg': reg_loss.item()
             }
             
         return loss
