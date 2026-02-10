@@ -4,7 +4,8 @@ import torch.nn as nn
 from typing import Optional, List, Tuple, Union, Dict
 
 from neural_me.core.observation import Observation
-from neural_me.core.atmosphere import Atmosphere
+from neural_me.core.atmospheres import Atmosphere
+from neural_me.core.constants import DEFAULT_NORMALIZATION
 from neural_me.physics.milne_eddington import MilneEddington
 from neural_me.regularization.spatial import smoothness_loss
 
@@ -24,7 +25,11 @@ class MEProblem:
         weights: List[float] = [1.0, 1.0, 1.0, 1.0], 
         loss_type: str = 'mse',
         regularization_weights: Optional[Dict[str, float]] = None,
-        device: Optional[torch.device] = None
+        backend: str = 'torch',
+        compile: bool = True,
+        device: Optional[torch.device] = None,
+        precision: str = 'float64',
+        **kwargs
     ):
         """
         Args:
@@ -34,33 +39,56 @@ class MEProblem:
             loss_type: 'mse' or 'l1'.
             regularization_weights: Dict mapping parameter names (or 'all') to spatial smoothing weights.
                                     Example: {'all': 1e-3} or {'B': 1e-2, 'vlos': 1e-3}.
+            backend: 'torch' (default) or 'cpp' for MilneEddington synthesis.
+            compile: If True and backend='torch', use torch.compile for speedup.
+                     Recommended for large batches (>10k pixels). Skip for small cases.
+            compile: If True and backend='torch', use torch.compile for speedup.
+                     Recommended for large batches (>10k pixels). Skip for small cases.
+            device: Torch device for computation.
+            precision: 'float32' or 'float64' (default: 'float64'). Only for 'cpp' backend.
+            **kwargs: Extra arguments for backend.
+                - checkpoint_gradients (bool): If True, use gradient checkpointing (backend='torch' only).
         """
         self.obs = observation
-        self.device = device if device else observation.device
         self.loss_type = loss_type.lower()
         self.regularization_weights = regularization_weights
+        self.backend = backend
+        
+        # Determine device - C++ backend requires CPU
+        if backend == 'cpp':
+            # Handle device as string or torch.device
+            is_gpu = False
+            if device is not None:
+                device_str = str(device) if isinstance(device, torch.device) else device
+                is_gpu = 'cuda' in device_str.lower()
+            
+            if is_gpu:
+                import warnings
+                warnings.warn(
+                    f"C++ backend does not support GPU. Forcing device to CPU "
+                    f"(requested: {device})"
+                )
+            self.device = torch.device('cpu')
+        else:
+            # Convert string to torch.device if needed
+            if device is None:
+                self.device = observation.device
+            elif isinstance(device, str):
+                self.device = torch.device(device)
+            else:
+                self.device = device
         
         # Ensure obs is on device
         if self.obs.device != self.device:
             self.obs = self.obs.to(self.device)
             
-        # Initialize Physics Model
-        self.model = MilneEddington(nlinea=nlinea)
+        # Initialize Physics Model with chosen backend
+        # We pass precision only if backend is cpp, but kwargs can handle it generally
+        self.model = MilneEddington(nlinea=nlinea, backend=backend, compile=compile, precision=precision, **kwargs)
         self.model.to(self.device)
         
-        # Parameter normalization weights (for scaling normalized [0,1] params to physical units)
-        # These values were empirically optimized in neural_me_legacy
-        self.normalization = {
-            'B': 500.0,      # Magnetic field (G): [0,1] → [0, 500 G]
-            'gamma': 1.0,    # Inclination (rad): [0,1] → [0, π]
-            'xi': 1.0,       # Azimuth (rad): [0,1] → [0, 2π]
-            'vlos': 2.0,     # Velocity (km/s): [0,1] → [0, 2 km/s]
-            'eta0': 100.0,   # Line-to-continuum ratio: [0,1] → [0, 100]
-            'a': 0.2,        # Damping parameter: [0,1] → [0, 0.2]
-            'ddop': 1.0,     # Doppler width (Å): [0,1] → [0, 1 Å]
-            'S0': 1.0,       # Source function (continuum): [0,1] → [0, 1]
-            'S1': 1.0        # Source function (gradient): [0,1] → [0, 1]
-        }
+        # Parameter normalization weights - use centralized constants
+        self.normalization = DEFAULT_NORMALIZATION.copy()
         
         # Loss Weights
         self.weights = torch.tensor(weights, device=self.device, dtype=torch.float32)
@@ -123,14 +151,14 @@ class MEProblem:
         # Get physical parameters stack [B, gamma, xi, vlos, eta0, a, ddop, S0, S1]
         params = atmosphere.to_stack() # Shape (..., 9)
         
+        # Flatten parameters to (Batch, 9) for MilneEddington model
+        # This handles both (Ny, Nx, 9) shaped atmospheres and (N_pixels, 9) flat/sliced ones
+        params = params.reshape(-1, 9)
+        
         # Broadcast wavelengths to match batch size
-        batch_size = params.shape[0] if params.dim() > 1 else 1
+        batch_size = params.shape[0]
         wl = self.obs.wavelengths.unsqueeze(0).expand(batch_size, -1)
         
-        # Check if params is 1D (single pixel) -> make it 2D (1, 9)
-        if params.dim() == 1:
-            params = params.unsqueeze(0)
-            
         I, Q, U, V = self.model(params, wl)
         
         return I, Q, U, V
@@ -146,13 +174,7 @@ class MEProblem:
         """
         # 1. Forward Pass
         if indices is not None:
-             params_subset = atmosphere._params_norm[indices]
-             atm_subset = Atmosphere(
-                 params_subset, 
-                 atmosphere.weights, 
-                 atmosphere.biases,
-                 grid_shape=None 
-             )
+             atm_subset = atmosphere[indices]
              I_mod, Q_mod, U_mod, V_mod = self.compute_forward_model(atm_subset)
              
              obs_I = self.obs.stokes_I[indices]

@@ -18,7 +18,7 @@ class MilneEddingtonCPP(nn.Module):
     """C++ Milne-Eddington implementation with PyTorch interface."""
     
     def __init__(self, nlinea=None, lambda_axis=None, mu=1.0, spectralPSF=None, nthreads=None, 
-                 lambda0=None, JUp=None, JLow=None, gUp=None, gLow=None):
+                 lambda0=None, JUp=None, JLow=None, gUp=None, gLow=None, precision='float64', **kwargs):
         super().__init__()
         
         # Support both nlinea (legacy/file) and explicit parameters
@@ -49,6 +49,7 @@ class MilneEddingtonCPP(nn.Module):
         self.mu = mu
         self.spectralPSF = spectralPSF
         self.nthreads = nthreads
+        self.precision = precision
         
         # Initialize C++ model if lambda_axis provided
         if lambda_axis is not None:
@@ -73,7 +74,8 @@ class MilneEddingtonCPP(nn.Module):
             lambda_axis,
             self.mu,
             spectralPSF=self.spectralPSF,
-            nthreads=self.nthreads
+            nthreads=self.nthreads,
+            precision=self.precision
         )
     
     def forward(self, params, wl=None, nlinea=None): # wl is optional if already initialized

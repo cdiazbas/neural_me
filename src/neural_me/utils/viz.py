@@ -16,21 +16,13 @@ from typing import Optional, Tuple, List, Union
 # =============================================================================
 
 LEGACY_PARAMS = {
-    "axes.labelsize": 19.0,
     "axes.linewidth": 1.8,
     "axes.titlesize": 18.0,
-    "figure.figsize": [6.15, 5.0],
-    "font.size": 10.0,
-    "legend.fontsize": 17.0,
     "legend.frameon": False,
     "lines.linewidth": 2.5,
     "savefig.bbox": "tight",
     "text.usetex": False,  # Disable by default for compatibility
-    "xtick.labelsize": 17.5,
-    "xtick.major.size": 14.0,
     "xtick.minor.visible": True,
-    "ytick.labelsize": 17.5,
-    "ytick.major.size": 14.0,
     "ytick.minor.visible": True,
     "image.interpolation": "nearest",
     "image.origin": "lower",

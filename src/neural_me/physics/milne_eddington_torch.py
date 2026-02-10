@@ -6,19 +6,53 @@ This is the original, reference implementation.
 import torch
 import torch.nn as nn
 from copy import deepcopy
+from torch.utils.checkpoint import checkpoint
 from .zeeman import fvoigt, paramLine
 
 class MilneEddingtonTorch(nn.Module):
     """Pure PyTorch Milne-Eddington implementation."""
-    def __init__(self, nlinea=None):
+    def __init__(self, nlinea=None, compile=False, checkpoint_gradients=False):
+        """
+        Initialize MilneEddingtonTorch.
+        
+        Args:
+            nlinea: Line configuration index
+            compile: If True, use torch.compile for potential speedup on large batches.
+                     Set to False for small cases to avoid compilation overhead.
+            checkpoint_gradients: If True, use gradient checkpointing to reduce memory usage
+                                  at the cost of extra computation during backward pass.
+        """
         super().__init__()
         if nlinea is not None:
             self.param = paramLine(nlinea)
         else:
             self.param = None
+        
+        # Optionally compile the synthesis function
+        self._compile = compile
+        self.checkpoint_gradients = checkpoint_gradients
+        if compile:
+            self._stokesSyn_compiled = torch.compile(self._stokesSyn_core)
+        else:
+            self._stokesSyn_compiled = None
 
-    @torch.compile
     def stokesSyn(self, param, x, B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1):
+        """Dispatch to compiled or non-compiled implementation."""
+        if self.checkpoint_gradients:
+             # Use checkpointing
+             # Note: param is a list, checkpoint handles args.
+             # We pass use_reentrant=False for better stability with modern PyTorch
+             if self._stokesSyn_compiled is not None:
+                 return checkpoint(self._stokesSyn_compiled, param, x, B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1, use_reentrant=False)
+             else:
+                 return checkpoint(self._stokesSyn_core, param, x, B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1, use_reentrant=False)
+        else:
+            if self._stokesSyn_compiled is not None:
+                return self._stokesSyn_compiled(param, x, B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1)
+            else:
+                return self._stokesSyn_core(param, x, B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1)
+
+    def _stokesSyn_core(self, param, x, B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1):
         
         # Pi square factor:
         sqrtpi = 1. / 1.7724538509055160 # sqrt(pi)

@@ -30,11 +30,13 @@ Neural ME is a modern, GPU-accelerated framework for Milne-Eddington (ME) spectr
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/neural_me.git
+git clone https://github.com/cdiazbas/neural_me.git
 cd neural_me
 
-# Install in development mode
-pip install -e .
+# Fresh install (choose one):
+pip install -e .          # Development mode (editable)
+# OR
+pip install .             # Regular install
 ```
 
 ## Quick Start
@@ -133,7 +135,7 @@ If you use Neural ME in your research, please cite:
   author = {Díaz Baso, C. J.},
   title = {Neural ME: Differentiable Milne-Eddington Inversions},
   year = {2024},
-  url = {https://github.com/your-org/neural_me}
+  url = {https://github.com/cdiazbas/neural_me}
 }
 ```
 

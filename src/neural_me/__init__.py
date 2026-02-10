@@ -11,9 +11,10 @@ from neural_me.core import (
     Observation,
     MEProblem,
     MultiMEProblem,
-    ParameterModel,
-    CartesianParameterModel,
-    StereoscopicParameterModel,
+    CartesianAtmosphere,
+    StereoscopicAtmosphere,
+    SphericalSoftplusAtmosphere,
+
 )
 
 # Physics components
@@ -24,15 +25,22 @@ from neural_me.optimization.pixel_solver import PixelSolver
 
 __version__ = "0.1.0"
 
+# Auto-apply plot parameters on import (graceful fallback)
+try:
+    from neural_me.utils.viz import set_plot_params
+    set_plot_params()
+except ImportError:
+    pass  # matplotlib not available, skip styling
+
 __all__ = [
     # Core
     'Atmosphere',
     'Observation', 
     'MEProblem',
     'MultiMEProblem',
-    'ParameterModel',
-    'CartesianParameterModel',
-    'StereoscopicParameterModel',
+    'CartesianAtmosphere',
+    'StereoscopicAtmosphere',
+    'SphericalSoftplusAtmosphere',
     # Physics
     'MilneEddington',
     # Optimization
