@@ -170,3 +170,4 @@ log*
 # External dependencies artifacts
 external/pyMilne/pyMilne.cpp
 external/pyMilne/__pycache__/
+src/neural_me/physics/milne_eddington_cpp/MilneEddington.py
