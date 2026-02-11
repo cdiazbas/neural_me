@@ -6,12 +6,12 @@ with automatic backend selection (PyTorch or C++).
 """
 
 
-def MilneEddington(nlinea=None, backend='torch', compile=False, **kwargs):
+def MilneEddington(nlinea=None, backend="torch", compile=False, **kwargs):
     """
     Create a Milne-Eddington synthesis model.
-    
+
     Factory function that returns the appropriate backend implementation.
-    
+
     Args:
         nlinea: Line identifier (e.g., 1 for Fe I 6301.5)
         backend: 'torch' (default) or 'cpp'
@@ -25,59 +25,59 @@ def MilneEddington(nlinea=None, backend='torch', compile=False, **kwargs):
             - precision: 'float32' or 'float64' (default: 'float64')
         **kwargs: Additional arguments for Torch backend:
             - checkpoint_gradients: If True, use gradient checkpointing (default: False)
-    
+
     Returns:
         MilneEddingtonTorch or MilneEddingtonCpp instance
-    
+
     Examples:
         >>> # PyTorch backend (default, no compile)
         >>> model = MilneEddington(nlinea=1)
-        
+
         >>> # PyTorch backend with compile (for large runs)
         >>> model = MilneEddington(nlinea=1, compile=True)
-        
+
         >>> # C++ backend
         >>> model = MilneEddington(nlinea=1, backend='cpp', lambda_axis=wl)
     """
-    if backend == 'torch':
+    if backend == "torch":
         from .milne_eddington_torch import MilneEddingtonTorch
-        checkpoint_gradients = kwargs.get('checkpoint_gradients', False)
-        return MilneEddingtonTorch(nlinea=nlinea, compile=compile, checkpoint_gradients=checkpoint_gradients)
-    
-    elif backend == 'cpp':
+
+        checkpoint_gradients = kwargs.get("checkpoint_gradients", False)
+        return MilneEddingtonTorch(
+            nlinea=nlinea, compile=compile, checkpoint_gradients=checkpoint_gradients
+        )
+
+    elif backend == "cpp":
         try:
             from .milne_eddington_cpp import MilneEddingtonCPP
+
             return MilneEddingtonCPP(nlinea=nlinea, **kwargs)
         except ImportError as e:
             raise ImportError(
                 f"C++ backend not available: {e}\n"
                 "Make sure the C++ extension is compiled and installed."
             )
-    
+
     else:
-        raise ValueError(
-            f"Unknown backend: '{backend}'. "
-            "Choose 'torch' or 'cpp'"
-        )
+        raise ValueError(f"Unknown backend: '{backend}'. Choose 'torch' or 'cpp'")
 
 
 def get_available_backends():
     """
     Check which backends are available.
-    
+
     Returns:
         dict: {'torch': bool, 'cpp': bool}
     """
-    backends = {'torch': True}  # PyTorch always available
-    
+    backends = {"torch": True}  # PyTorch always available
+
     try:
-        from .milne_eddington_cpp import MilneEddingtonCpp
-        backends['cpp'] = True
+        backends["cpp"] = True
     except ImportError:
-        backends['cpp'] = False
-    
+        backends["cpp"] = False
+
     return backends
 
 
 # Public API
-__all__ = ['MilneEddington', 'get_available_backends']
+__all__ = ["MilneEddington", "get_available_backends"]

@@ -12,13 +12,15 @@ import torch
 def get_free_gpu() -> torch.device:
     """
     Selects the GPU with the most free memory using nvidia-smi.
-    
+
     Returns:
         torch.device for the best available GPU, or CPU if no GPU available.
     """
     try:
         command = "nvidia-smi --query-gpu=memory.free --format=csv,nounits,noheader"
-        memory_free = subprocess.check_output(command.split()).decode('ascii').split('\n')[:-1]
+        memory_free = (
+            subprocess.check_output(command.split()).decode("ascii").split("\n")[:-1]
+        )
         memory_free = [int(x) for x in memory_free]
         if not memory_free:
             return torch.device("cpu")
@@ -31,11 +33,11 @@ def get_free_gpu() -> torch.device:
 def format_scientific(value: float, precision: int = 2) -> str:
     """
     Formats a numerical value into a LaTeX-style scientific notation string.
-    
+
     Args:
         value: Number to format.
         precision: Decimal precision.
-        
+
     Returns:
         LaTeX-formatted string (e.g., "1.23 \\times 10^{3}")
     """
@@ -51,10 +53,10 @@ def format_scientific(value: float, precision: int = 2) -> str:
 def even_shape(x: np.ndarray) -> np.ndarray:
     """
     Crops an image array to ensure its dimensions are even.
-    
+
     Args:
         x: Array with shape (ny, nx, ...).
-        
+
     Returns:
         Cropped array with even ny and nx.
     """
@@ -65,13 +67,18 @@ def even_shape(x: np.ndarray) -> np.ndarray:
 
 
 class AttributeDict(dict):
-    """Dictionary subclass that allows attribute-style access."""
+    """
+    Dictionary subclass that allows attribute-style access.
+    """
+
     __getattr__ = dict.__getitem__
     __setattr__ = dict.__setitem__
 
 
 def print_summary(n_pixels: int, n_params: int):
-    """Prints a summary of pixels and parameters."""
+    """
+    Prints a summary of pixels and parameters.
+    """
     print(f"Number of parameters: {n_params}")
     print(f"Number of pixels: {n_pixels}")
     print(f"Pixels per parameter: {n_pixels / n_params:.2f}")

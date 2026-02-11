@@ -8,7 +8,7 @@ import numpy as np
 from typing import Optional, Tuple, Dict, Any
 
 from .base import Atmosphere
-from .base import Atmosphere
+
 
 class SphericalAtmosphere(Atmosphere):
     """
@@ -16,103 +16,127 @@ class SphericalAtmosphere(Atmosphere):
     """
 
     def __init__(
-        self, 
-        grid_shape: Tuple[int, ...], 
+        self,
+        grid_shape: Tuple[int, ...],
         mask: Optional[torch.Tensor] = None,
         norm: Optional[Dict[str, float]] = None,
         device: Optional[torch.device] = None,
-        init_type: str = 'default'
+        init_type: str = "default",
     ):
         super().__init__()
         self.grid_shape = grid_shape
-        self.device = device or torch.device('cpu')
-        
+        self.device = device or torch.device("cpu")
+
         if mask is not None:
             self.n_elements = mask.sum().item()
             self.is_masked = True
-            self.register_buffer('mask', mask)
+            self.register_buffer("mask", mask)
         else:
             self.n_elements = int(np.prod(grid_shape))
             self.is_masked = False
-            
+
         self.norm = self.DEFAULT_NORMALIZATION.copy()
-        if norm: self.norm.update(norm)
-            
+        if norm:
+            self.norm.update(norm)
+
         self.defaults = self.DEFAULT_PARAMETERS.copy()
-        
+
         self._init_params(init_type)
-        
+
     def _init_params(self, init_type):
         def make_param(val):
             return nn.Parameter(torch.ones(self.n_elements, device=self.device) * val)
-            
+
         d = self.defaults.copy()
-        if init_type == 'zeros':
-            for k in d: d[k] = 0.0
-            
-        self._B     = make_param(d['B'] / self.norm['B'])
-        self._gamma = make_param(d['gamma'] / self.norm['gamma'])
-        self._xi    = make_param(d['xi'] / self.norm['xi'])
-        self._vlos  = make_param(d['vlos'] / self.norm['vlos'])
-        self._eta0  = make_param(d['eta0'] / self.norm['eta0'])
-        self._a     = make_param(d['a'] / self.norm['a'])
-        self._ddop  = make_param(d['ddop'] / self.norm['ddop'])
-        self._S0    = make_param(d['S0'] / self.norm['S0'])
-        self._S1    = make_param(d['S1'] / self.norm['S1'])
+        if init_type == "zeros":
+            for k in d:
+                d[k] = 0.0
+
+        self._B = make_param(d["B"] / self.norm["B"])
+        self._gamma = make_param(d["gamma"] / self.norm["gamma"])
+        self._xi = make_param(d["xi"] / self.norm["xi"])
+        self._vlos = make_param(d["vlos"] / self.norm["vlos"])
+        self._eta0 = make_param(d["eta0"] / self.norm["eta0"])
+        self._a = make_param(d["a"] / self.norm["a"])
+        self._ddop = make_param(d["ddop"] / self.norm["ddop"])
+        self._S0 = make_param(d["S0"] / self.norm["S0"])
+        self._S1 = make_param(d["S1"] / self.norm["S1"])
 
     def _expand(self, tensor):
-        if self.is_masked: return tensor
+        if self.is_masked:
+            return tensor
         return tensor.view(*self.grid_shape)
 
     @property
-    def B(self): return self._expand(self._B * self.norm['B'])
-    
+    def B(self):
+        return self._expand(self._B * self.norm["B"])
+
     @property
-    def gamma(self): return self._expand(self._gamma * self.norm['gamma'])
-    
+    def gamma(self):
+        return self._expand(self._gamma * self.norm["gamma"])
+
     @property
-    def xi(self): return self._expand(self._xi * self.norm['xi'])
-    
+    def xi(self):
+        return self._expand(self._xi * self.norm["xi"])
+
     @property
-    def vlos(self): return self._expand(self._vlos * self.norm['vlos'])
-    
+    def vlos(self):
+        return self._expand(self._vlos * self.norm["vlos"])
+
     @property
-    def eta0(self): return self._expand(self._eta0 * self.norm['eta0'])
-    
+    def eta0(self):
+        return self._expand(self._eta0 * self.norm["eta0"])
+
     @property
-    def a(self): return self._expand(self._a * self.norm['a'])
-    
+    def a(self):
+        return self._expand(self._a * self.norm["a"])
+
     @property
-    def ddop(self): return self._expand(self._ddop * self.norm['ddop'])
-    
+    def ddop(self):
+        return self._expand(self._ddop * self.norm["ddop"])
+
     @property
-    def S0(self): return self._expand(self._S0 * self.norm['S0'])
-    
+    def S0(self):
+        return self._expand(self._S0 * self.norm["S0"])
+
     @property
-    def S1(self): return self._expand(self._S1 * self.norm['S1'])
+    def S1(self):
+        return self._expand(self._S1 * self.norm["S1"])
 
     def set_parameters(self, params: Dict[str, Any]):
         with torch.no_grad():
             for k, v in params.items():
                 if isinstance(v, (np.ndarray, float, int)):
-                    t = torch.as_tensor(v, dtype=torch.float32, device=self.device).flatten()
+                    t = torch.as_tensor(
+                        v, dtype=torch.float32, device=self.device
+                    ).flatten()
                 elif isinstance(v, torch.Tensor):
                     t = v.to(self.device).flatten()
-                else: continue
-                
-                if k == 'B': self._B.copy_(t / self.norm['B'])
-                elif k == 'gamma': self._gamma.copy_(t / self.norm['gamma'])
-                elif k == 'xi': self._xi.copy_(t / self.norm['xi'])
-                elif k == 'vlos': self._vlos.copy_(t / self.norm['vlos'])
-                elif k == 'eta0': self._eta0.copy_(t / self.norm['eta0'])
-                elif k == 'a': self._a.copy_(t / self.norm['a'])
-                elif k == 'ddop': self._ddop.copy_(t / self.norm['ddop'])
-                elif k == 'S0': self._S0.copy_(t / self.norm['S0'])
-                elif k == 'S1': self._S1.copy_(t / self.norm['S1'])
+                else:
+                    continue
+
+                if k == "B":
+                    self._B.copy_(t / self.norm["B"])
+                elif k == "gamma":
+                    self._gamma.copy_(t / self.norm["gamma"])
+                elif k == "xi":
+                    self._xi.copy_(t / self.norm["xi"])
+                elif k == "vlos":
+                    self._vlos.copy_(t / self.norm["vlos"])
+                elif k == "eta0":
+                    self._eta0.copy_(t / self.norm["eta0"])
+                elif k == "a":
+                    self._a.copy_(t / self.norm["a"])
+                elif k == "ddop":
+                    self._ddop.copy_(t / self.norm["ddop"])
+                elif k == "S0":
+                    self._S0.copy_(t / self.norm["S0"])
+                elif k == "S1":
+                    self._S1.copy_(t / self.norm["S1"])
 
     def clamp_parameters(self):
         with torch.no_grad():
-            self._B.clamp_(min=0.0) # B > 0
+            self._B.clamp_(min=0.0)  # B > 0
             self._vlos.clamp_(-2.5, 2.5)
             self._eta0.clamp_(0.0001, 6.0)
             self._a.clamp_(0.005, 5.0)

@@ -12,20 +12,20 @@ from neural_me.core.atmospheres import (
     CartesianAtmosphere,
     SphericalAtmosphere,
     SphericalSoftplusAtmosphere,
-    StereoscopicAtmosphere
+    StereoscopicAtmosphere,
 )
 from neural_me.core.constants import DEFAULT_NORMALIZATION, DEFAULT_PARAMETERS
 
 __all__ = [
-    'Observation',
-    'MEProblem',
-    'MultiMEProblem',
-    'Atmosphere', 
-    'SlicedAtmosphere',
-    'CartesianAtmosphere', 
-    'SphericalAtmosphere',
-    'SphericalSoftplusAtmosphere',
-    'StereoscopicAtmosphere',
-    'DEFAULT_NORMALIZATION',
-    'DEFAULT_PARAMETERS',
+    "Observation",
+    "MEProblem",
+    "MultiMEProblem",
+    "Atmosphere",
+    "SlicedAtmosphere",
+    "CartesianAtmosphere",
+    "SphericalAtmosphere",
+    "SphericalSoftplusAtmosphere",
+    "StereoscopicAtmosphere",
+    "DEFAULT_NORMALIZATION",
+    "DEFAULT_PARAMETERS",
 ]
