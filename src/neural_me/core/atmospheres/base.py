@@ -11,6 +11,45 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any
 
 
+# --- Standardized Default Values (Single Source of Truth) ---
+DEFAULT_NORMALIZATION = {
+    # Magnetic field components (Gauss)
+    "B": 500.0,  # Total magnetic field strength
+    "Blos": 500.0,  # Line-of-sight component
+    "BQ": 500.0,  # Stokes Q component
+    "BU": 500.0,  # Stokes U component
+    # Magnetic field angles (radians)
+    "gamma": 1.0,  # Inclination angle [0, π]
+    "xi": 1.0,  # Azimuth angle [0, 2π]
+    # Thermodynamic parameters
+    "vlos": 2.0,  # Line-of-sight velocity (km/s)
+    "eta0": 100.0,  # Line-to-continuum absorption ratio
+    "a": 0.2,  # Damping parameter
+    "ddop": 1.0,  # Doppler width (Angstrom)
+    # Source function parameters
+    "S0": 1.0,  # Source function constant
+    "S1": 1.0,  # Source function gradient
+}
+
+DEFAULT_PARAMETERS = {
+    # Magnetic field
+    "Blos": 500.0,
+    "BQ": 500.0,
+    "BU": 500.0,
+    "B": 500.0,
+    "gamma": 1.0,
+    "xi": 1.0,
+    # Thermodynamic
+    "vlos": 0.0,
+    "eta0": 50.0,
+    "a": 0.2,
+    "ddop": 0.02,
+    # Source function
+    "S0": 0.5,
+    "S1": 0.5,
+}
+
+
 class Atmosphere(nn.Module, ABC):
     """
     Abstract base class for all Atmosphere models.
@@ -19,46 +58,11 @@ class Atmosphere(nn.Module, ABC):
     Synthesis. It is an nn.Module, so it can hold learnable parameters.
     """
 
+    DEFAULT_NORMALIZATION = DEFAULT_NORMALIZATION
+    DEFAULT_PARAMETERS = DEFAULT_PARAMETERS
+
     def __init__(self):
         super().__init__()
-
-    # --- Standardized Default Values (Single Source of Truth) ---
-    DEFAULT_NORMALIZATION = {
-        # Magnetic field components (Gauss)
-        "B": 500.0,  # Total magnetic field strength
-        "Blos": 500.0,  # Line-of-sight component
-        "BQ": 500.0,  # Stokes Q component
-        "BU": 500.0,  # Stokes U component
-        # Magnetic field angles (radians)
-        "gamma": 1.0,  # Inclination angle [0, π]
-        "xi": 1.0,  # Azimuth angle [0, 2π]
-        # Thermodynamic parameters
-        "vlos": 2.0,  # Line-of-sight velocity (km/s)
-        "eta0": 100.0,  # Line-to-continuum absorption ratio
-        "a": 0.2,  # Damping parameter
-        "ddop": 1.0,  # Doppler width (Angstrom)
-        # Source function parameters
-        "S0": 1.0,  # Source function constant
-        "S1": 1.0,  # Source function gradient
-    }
-
-    DEFAULT_PARAMETERS = {
-        # Magnetic field
-        "Blos": 500.0,
-        "BQ": 500.0,
-        "BU": 500.0,
-        "B": 500.0,
-        "gamma": 1.0,
-        "xi": 1.0,
-        # Thermodynamic
-        "vlos": 0.0,
-        "eta0": 50.0,
-        "a": 0.2,
-        "ddop": 0.02,
-        # Source function
-        "S0": 0.5,
-        "S1": 0.5,
-    }
 
     # --- Abstract Physical Properties (Must be implemented by subclasses) ---
     # All properties must return tensors in PHYSICAL units.

@@ -2,8 +2,10 @@ import torch
 from typing import Optional, List, Tuple, Union, Dict
 
 from neural_me.core.observation import Observation
-from neural_me.core.atmospheres import Atmosphere
-from neural_me.core.constants import DEFAULT_NORMALIZATION
+from neural_me.core.atmospheres.base import (
+    Atmosphere,
+    DEFAULT_NORMALIZATION,
+)
 from neural_me.physics.milne_eddington import MilneEddington
 from neural_me.regularization.spatial import smoothness_loss
 

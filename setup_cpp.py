@@ -164,7 +164,14 @@ def get_pymilne_extension():
 
     # Compilation flags (removed -march=native and -mtune=native for CPU compatibility)
     comp_flags = [
-        "-Ofast",
+        "-O3",
+        "-mavx2",
+        "-mfma",
+        "-fno-math-errno",
+        "-fsimd-cost-model=unconditional",
+        "-mprefer-vector-width=256",
+        "-fopenmp-simd",
+        "-ftree-vectorize",
         "-g0",
         "-fstrict-aliasing",
         "-std=c++20",
@@ -172,7 +179,6 @@ def get_pymilne_extension():
         "-fopenmp",
         "-I./external/pyMilne/src",
         "-DNPY_NO_DEPRECATED_API",
-        "-mprefer-vector-width=256",
         "-DNDEBUG",
         "-pedantic",
         "-Wall",

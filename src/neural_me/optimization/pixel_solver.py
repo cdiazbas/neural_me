@@ -6,6 +6,7 @@ from typing import Optional, Dict
 
 from neural_me.core.problem import MEProblem
 from neural_me.core.atmospheres import Atmosphere, CartesianAtmosphere
+from neural_me.optimization.lmadam import LMAdam
 
 
 class PixelSolver:
@@ -117,6 +118,7 @@ class PixelSolver:
         params_to_optimize = list(self.atmosphere.parameters())
 
         optimizer = optimizer_cls(params_to_optimize, lr=lr, **optimizer_kwargs)
+        use_lm = isinstance(optimizer, LMAdam)
 
         iterator = trange(n_iterations, leave=True) if verbose else range(n_iterations)
 
@@ -132,8 +134,11 @@ class PixelSolver:
             # 2. Backward
             loss.backward()
 
-            # 3. Optimizer step
-            optimizer.step()
+            # 3. Optimizer step (pass loss for LMAdam acceptance logic)
+            if use_lm:
+                optimizer.step(loss=loss.item())
+            else:
+                optimizer.step()
 
             # 4. Parameter clamping
             if clamp_parameters:
@@ -141,11 +146,15 @@ class PixelSolver:
 
             # 5. Logging
             if verbose and hasattr(iterator, "set_postfix"):
-                iterator.set_postfix(
-                    {
-                        "Chi2": f"{loss.item():.2e}",
-                    }
-                )
+                postfix = {"Chi2": f"{loss.item():.2e}"}
+                if use_lm:
+                    postfix["lam"] = f"{optimizer.lm_lambda:.1e}"
+                    postfix["rej"] = optimizer.n_rejects
+                iterator.set_postfix(postfix)
+
+        # Restore best parameters if using LMAdam
+        if use_lm:
+            optimizer.restore_best()
 
     def get_atmosphere(self) -> Atmosphere:
         """
