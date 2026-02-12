@@ -4,6 +4,7 @@ C++ implementation wrapper for Milne-Eddington synthesis.
 Uses the compiled C++ extension via milne_cpp.py interface.
 """
 
+import torch
 import torch.nn as nn
 
 
@@ -154,3 +155,20 @@ class MilneEddingtonCPP(nn.Module):
         V = stokes[:, 3 * n_lambda : 4 * n_lambda]
 
         return I, Q, U, V
+
+    def get_last_response_functions(self):
+        """
+        Return the response functions (Jacobian) from the last forward pass.
+
+        The C++ backend computes the full RF during forward(). This method
+        returns them as a torch tensor for use by the LM solver.
+
+        Returns:
+            torch.Tensor: (n_pixels, 9, 4*n_wav) response functions.
+                          CPP parameter order: [B, gamma, xi, vlos, ddop, eta0, a, S0, S1]
+            None: if no forward pass has been done yet.
+        """
+        from .milne_cpp import _last_response_functions
+        if _last_response_functions is None:
+            return None
+        return torch.as_tensor(_last_response_functions)

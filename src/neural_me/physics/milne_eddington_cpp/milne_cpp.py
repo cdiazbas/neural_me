@@ -3,6 +3,10 @@ from . import MilneEddington as ME
 import numpy as np
 from einops import rearrange
 
+# Module-level storage for response functions from last C++ forward pass.
+# Used by the LM solver to access the full Jacobian without re-computation.
+_last_response_functions = None
+
 
 class MILNE_function(torch.autograd.Function):
     """
@@ -88,6 +92,10 @@ class MILNE_function(torch.autograd.Function):
         ctx.nl4 = stokes.shape[0] * stokes.shape[1]
         ctx.input_device = B.device  # Store original device for backward
 
+        # Store RF globally for LM solver access
+        global _last_response_functions
+        _last_response_functions = dstokes  # (n_pixels, 9, 4*n_wav) numpy array
+
         # global RF_global
         # RF_global = ctx.dstokes
 
@@ -105,7 +113,7 @@ class MILNE_function(torch.autograd.Function):
         # Convert response functions to tensors on the correct device (Zero-copy if on CPU)
         # ctx.dstokes layout: (Pixels, 9, TotalWvl)
         # grad_output layout: (Pixels, TotalWvl)
-        dstokes_t = torch.as_tensor(ctx.dstokes, device=device)
+        dstokes_t = torch.as_tensor(ctx.dstokes, device=device, dtype=grad_output.dtype)
 
         # Compute all 9 gradients at once using batched matrix multiplication
         # (Pixels, 9, TotalWvl) @ (Pixels, TotalWvl, 1) -> (Pixels, 9, 1)
@@ -167,6 +175,7 @@ def findgrid(w, dw, extra=5):
 class MILNE(torch.nn.Module):
     """
     Adding the possibility of using a spectral PSF.
+    Stores response functions (RF) from last forward call for LM access.
     """
 
     def __init__(
@@ -233,6 +242,7 @@ class MILNE(torch.nn.Module):
             regions, lines, nthreads=nthreads, precision=precision
         )
         self.mu = mu
+        self._last_rf = None  # Store RF from last forward pass for LM solver
 
     def forward(self, B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1):
         if self.spectralPSF is None:

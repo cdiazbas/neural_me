@@ -6,7 +6,6 @@ from typing import Optional, Dict
 
 from neural_me.core.problem import MEProblem
 from neural_me.core.atmospheres import Atmosphere, CartesianAtmosphere
-from neural_me.optimization.lmadam import LMAdam
 
 
 class PixelSolver:
@@ -98,6 +97,7 @@ class PixelSolver:
         verbose: bool = True,
         normalize_gradients: bool = False,
         clamp_parameters: bool = True,
+        return_history: bool = False,
     ):
         """
         Runs the optimization loop.
@@ -118,15 +118,15 @@ class PixelSolver:
         params_to_optimize = list(self.atmosphere.parameters())
 
         optimizer = optimizer_cls(params_to_optimize, lr=lr, **optimizer_kwargs)
-        use_lm = isinstance(optimizer, LMAdam)
+        use_lm = False
 
         iterator = trange(n_iterations, leave=True) if verbose else range(n_iterations)
 
+        loss_history = []
         for i in iterator:
             optimizer.zero_grad()
 
             # 1. Compute Loss
-            # PixelSolver passes the FULL atmosphere usually.
             loss, breakdown = self.problem.compute_loss(
                 self.atmosphere, return_breakdown=True
             )
@@ -134,7 +134,7 @@ class PixelSolver:
             # 2. Backward
             loss.backward()
 
-            # 3. Optimizer step (pass loss for LMAdam acceptance logic)
+            # 3. Optimizer step
             if use_lm:
                 optimizer.step(loss=loss.item())
             else:
@@ -145,6 +145,7 @@ class PixelSolver:
                 self.atmosphere.clamp_parameters()
 
             # 5. Logging
+            loss_history.append(loss.item())
             if verbose and hasattr(iterator, "set_postfix"):
                 postfix = {"Chi2": f"{loss.item():.2e}"}
                 if use_lm:
@@ -152,9 +153,12 @@ class PixelSolver:
                     postfix["rej"] = optimizer.n_rejects
                 iterator.set_postfix(postfix)
 
-        # Restore best parameters if using LMAdam
+        # Restore best parameters if using LM
         if use_lm:
             optimizer.restore_best()
+
+        if return_history:
+            return loss_history
 
     def get_atmosphere(self) -> Atmosphere:
         """
