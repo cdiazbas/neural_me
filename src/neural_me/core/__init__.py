@@ -14,7 +14,6 @@ from neural_me.core.atmospheres import (
     SphericalSoftplusAtmosphere,
     StereoscopicAtmosphere,
 )
-from neural_me.core.atmospheres.base import Atmosphere
 from neural_me.core.atmospheres.base import (
     DEFAULT_NORMALIZATION,
     DEFAULT_PARAMETERS,

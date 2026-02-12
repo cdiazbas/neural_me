@@ -175,6 +175,7 @@ def findgrid(w, dw, extra=5):
 class MILNE(torch.nn.Module):
     """
     Adding the possibility of using a spectral PSF.
+
     Stores response functions (RF) from last forward call for LM access.
     """
 

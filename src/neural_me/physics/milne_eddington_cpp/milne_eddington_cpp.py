@@ -169,6 +169,7 @@ class MilneEddingtonCPP(nn.Module):
             None: if no forward pass has been done yet.
         """
         from .milne_cpp import _last_response_functions
+
         if _last_response_functions is None:
             return None
         return torch.as_tensor(_last_response_functions)

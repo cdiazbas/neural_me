@@ -66,8 +66,10 @@ class LevMarSolver:
             self.atmosphere = atmosphere
         elif use_cartesian:
             from neural_me.core.atmospheres import CartesianAtmosphere
+
             self.atmosphere = CartesianAtmosphere(
-                grid_shape=problem.obs.grid_shape, device=self.device,
+                grid_shape=problem.obs.grid_shape,
+                device=self.device,
             )
         else:
             raise ValueError("Provide 'atmosphere' or set 'use_cartesian=True'.")
@@ -77,12 +79,15 @@ class LevMarSolver:
 
         # Observed data: (n_pixels, 4 * n_wav)
         mask = self.problem.obs.active_wav_idx
-        self._obs_flat = torch.cat([
-            self.problem.obs.stokes_I[:, mask],
-            self.problem.obs.stokes_Q[:, mask],
-            self.problem.obs.stokes_U[:, mask],
-            self.problem.obs.stokes_V[:, mask],
-        ], dim=-1).to(self.device)  # (n_pixels, 4*n_wav)
+        self._obs_flat = torch.cat(
+            [
+                self.problem.obs.stokes_I[:, mask],
+                self.problem.obs.stokes_Q[:, mask],
+                self.problem.obs.stokes_U[:, mask],
+                self.problem.obs.stokes_V[:, mask],
+            ],
+            dim=-1,
+        ).to(self.device)  # (n_pixels, 4*n_wav)
 
         self._n_wav = mask.numel()
         self._n_dat = 4 * self._n_wav
@@ -94,22 +99,31 @@ class LevMarSolver:
         self._wl = self.problem.obs.wavelengths[mask].to(self.device)
 
         # Detect backend
-        self._is_cpp = (self.problem.backend == "cpp")
+        self._is_cpp = self.problem.backend == "cpp"
 
         # Loss history
         self.chi2_history = []
         self.lambda_history = []
 
-    def set_weights(self, sigma_I: float = 1.0, sigma_Q: float = 1.0,
-                    sigma_U: float = 1.0, sigma_V: float = 1.0):
-        """Set per-Stokes noise weights (inverse weights for Chi2)."""
+    def set_weights(
+        self,
+        sigma_I: float = 1.0,
+        sigma_Q: float = 1.0,
+        sigma_U: float = 1.0,
+        sigma_V: float = 1.0,
+    ):
+        """
+        Set per-Stokes noise weights (inverse weights for Chi2).
+        """
         nw = self._n_wav
-        self._sigma = torch.cat([
-            torch.full((nw,), sigma_I, device=self.device),
-            torch.full((nw,), sigma_Q, device=self.device),
-            torch.full((nw,), sigma_U, device=self.device),
-            torch.full((nw,), sigma_V, device=self.device),
-        ])
+        self._sigma = torch.cat(
+            [
+                torch.full((nw,), sigma_I, device=self.device),
+                torch.full((nw,), sigma_Q, device=self.device),
+                torch.full((nw,), sigma_U, device=self.device),
+                torch.full((nw,), sigma_V, device=self.device),
+            ]
+        )
 
     # ------------------------------------------------------------------ #
     #  Forward model + Jacobian
@@ -169,8 +183,9 @@ class LevMarSolver:
             def pixel_fn(params_9):
                 p = params_9.unsqueeze(0)
                 I, Q, U, V = model(p, wl_single)
-                return torch.cat([I.squeeze(0), Q.squeeze(0),
-                                  U.squeeze(0), V.squeeze(0)])
+                return torch.cat(
+                    [I.squeeze(0), Q.squeeze(0), U.squeeze(0), V.squeeze(0)]
+                )
 
             jac_fn = vmap(jacrev(pixel_fn))
             J = jac_fn(params)  # (n_pixels, 4*n_wav, 9)
@@ -207,7 +222,7 @@ class LevMarSolver:
 
     def _compute_chi2(self, residuals: torch.Tensor) -> torch.Tensor:
         """Per-pixel Chi2: (n_pixels,)"""
-        return torch.sum(residuals ** 2, dim=-1)
+        return torch.sum(residuals**2, dim=-1)
 
     def _solve_lm_step(
         self,
@@ -242,7 +257,7 @@ class LevMarSolver:
 
         # Diagonal damping: A[i,i] *= (1 + lambda)
         diag_idx = torch.arange(n_par, device=J.device)
-        A[:, diag_idx, diag_idx] *= (1.0 + lam)
+        A[:, diag_idx, diag_idx] *= 1.0 + lam
 
         # Solve A * delta = B
         try:
@@ -253,33 +268,45 @@ class LevMarSolver:
         return delta
 
     def _params_from_atmosphere(self) -> torch.Tensor:
-        """Get (n_pixels, 9) physical params from atmosphere."""
+        """
+        Get (n_pixels, 9) physical params from atmosphere.
+        """
         with torch.no_grad():
             return self.atmosphere.to_stack().reshape(-1, 9).clone()
 
     def _params_to_atmosphere(self, params: torch.Tensor):
-        """Set atmosphere from (n_pixels, 9) physical params [B,gamma,xi,...]."""
+        """
+        Set atmosphere from (n_pixels, 9) physical params [B,gamma,xi,...].
+        """
         with torch.no_grad():
-            B     = params[:, 0]
+            B = params[:, 0]
             gamma = params[:, 1]
-            xi    = params[:, 2]
-            vlos  = params[:, 3]
-            eta0  = params[:, 4]
-            a     = params[:, 5]
-            ddop  = params[:, 6]
-            S0    = params[:, 7]
-            S1    = params[:, 8]
+            xi = params[:, 2]
+            vlos = params[:, 3]
+            eta0 = params[:, 4]
+            a = params[:, 5]
+            ddop = params[:, 6]
+            S0 = params[:, 7]
+            S1 = params[:, 8]
 
             Blos = B * torch.cos(gamma)
-            Bt   = B * torch.sin(gamma)
-            BQ   = Bt * torch.cos(2.0 * xi)
-            BU   = Bt * torch.sin(2.0 * xi)
+            Bt = B * torch.sin(gamma)
+            BQ = Bt * torch.cos(2.0 * xi)
+            BU = Bt * torch.sin(2.0 * xi)
 
-            self.atmosphere.set_parameters({
-                'Blos': Blos, 'BQ': BQ, 'BU': BU,
-                'vlos': vlos, 'eta0': eta0, 'a': a,
-                'ddop': ddop, 'S0': S0, 'S1': S1,
-            })
+            self.atmosphere.set_parameters(
+                {
+                    "Blos": Blos,
+                    "BQ": BQ,
+                    "BU": BU,
+                    "vlos": vlos,
+                    "eta0": eta0,
+                    "a": a,
+                    "ddop": ddop,
+                    "S0": S0,
+                    "S1": S1,
+                }
+            )
 
     # ------------------------------------------------------------------ #
     #  Main inversion loop (matching pyMilne's fitData faithfully)
@@ -288,10 +315,10 @@ class LevMarSolver:
     def solve(
         self,
         max_iter: int = 20,
-        init_lambda: float = 3.1623,       # sqrt(10), pyMilne default
-        chi2_threshold: float = 1.0,        # Stop if mean Chi2 < threshold
-        fx_threshold: float = 2e-3,         # Stop if relative improvement < threshold
-        max_rejects: int = 6,               # Max consecutive rejects before stopping
+        init_lambda: float = 3.1623,  # sqrt(10), pyMilne default
+        chi2_threshold: float = 1.0,  # Stop if mean Chi2 < threshold
+        fx_threshold: float = 2e-3,  # Stop if relative improvement < threshold
+        max_rejects: int = 6,  # Max consecutive rejects before stopping
         verbose: bool = True,
     ) -> Dict:
         """
@@ -333,8 +360,10 @@ class LevMarSolver:
         best_params = self._params_from_atmosphere()  # (n_pixels, 9)
 
         if verbose:
-            print(f"LevMarSolver: {self.n_pixels} pixels, "
-                  f"{self._n_dat} data points/pixel, 9 parameters")
+            print(
+                f"LevMarSolver: {self.n_pixels} pixels, "
+                f"{self._n_dat} data points/pixel, 9 parameters"
+            )
             print(f"  init_lambda={lam:.4f}, max_iter={max_iter}")
 
         # --- Initial forward + Jacobian --- #
@@ -417,25 +446,29 @@ class LevMarSolver:
                 dt_jac = time.time() - t_jac
 
                 if verbose:
-                    iterator.set_postfix({
-                        'Chi2': f'{best_chi2:.5f}',
-                        'lam': f'{lam:.2e}',
-                        'd': f'{dfx:.1e}',
-                        'dt': f'{dt_jac:.1f}s',
-                    })
+                    iterator.set_postfix(
+                        {
+                            "Chi2": f"{best_chi2:.5f}",
+                            "lam": f"{lam:.2e}",
+                            "d": f"{dfx:.1e}",
+                            "dt": f"{dt_jac:.1f}s",
+                        }
+                    )
 
             else:
                 # Increase lambda and retry (matching C++)
                 old_lam = lam
-                lam = check_lambda(lam * fac_lam ** 2)
+                lam = check_lambda(lam * fac_lam**2)
                 n_rejected += 1
 
                 if verbose:
-                    iterator.set_postfix({
-                        'Chi2': f'{trial_chi2:.5f}>{best_chi2:.5f}',
-                        'lam': f'{old_lam:.2e}->{lam:.2e}',
-                        'rej': n_rejected,
-                    })
+                    iterator.set_postfix(
+                        {
+                            "Chi2": f"{trial_chi2:.5f}>{best_chi2:.5f}",
+                            "lam": f"{old_lam:.2e}->{lam:.2e}",
+                            "rej": n_rejected,
+                        }
+                    )
 
                 if n_rejected < max_rejects:
                     continue  # Retry with same J, higher lambda
@@ -456,7 +489,7 @@ class LevMarSolver:
 
             if quit_flag:
                 if verbose:
-                    print(f"\n  Stopped: improvement too small for 2 iterations")
+                    print("\n  Stopped: improvement too small for 2 iterations")
                 break
 
         # --- Restore best model --- #
@@ -468,12 +501,14 @@ class LevMarSolver:
             print(f"  Final: mean Chi2={best_chi2:.5f}, total={total_time:.1f}s")
 
         return {
-            'chi2': best_chi2,
-            'chi2_history': self.chi2_history,
-            'lambda_history': self.lambda_history,
-            'n_iterations': it + 1 if 'it' in dir() else 0,
+            "chi2": best_chi2,
+            "chi2_history": self.chi2_history,
+            "lambda_history": self.lambda_history,
+            "n_iterations": it + 1 if "it" in dir() else 0,
         }
 
     def get_atmosphere(self) -> Atmosphere:
-        """Return the optimized atmosphere."""
+        """
+        Return the optimized atmosphere.
+        """
         return self.atmosphere
