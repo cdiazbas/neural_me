@@ -5,7 +5,7 @@ from tqdm import trange
 from typing import Optional, Dict
 
 from neural_me.core.problem import MEProblem
-from neural_me.core.atmospheres import Atmosphere, CartesianAtmosphere
+from neural_me.core.atmospheres import Atmosphere, CartesianAtmosphere, SphericalSoftplusAtmosphere
 
 
 class PixelSolver:
@@ -65,9 +65,9 @@ class PixelSolver:
                 grid_shape=self.grid_shape, device=self.device
             )
         else:
-            raise ValueError(
-                "PixelSolver requires either an 'atmosphere' object or 'use_cartesian=True'. "
-                "Legacy raw tensor mode is no longer supported."
+            # Default: SphericalSoftplusAtmosphere
+            self.atmosphere = SphericalSoftplusAtmosphere(
+                grid_shape=self.grid_shape, device=self.device
             )
 
     def set_from_wfa(

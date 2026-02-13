@@ -146,3 +146,7 @@ BSD 3-Clause License. See [LICENSE.rst](LICENSE.rst) for details.
 ## Acknowledgments
 
 Developed at the Rosseland Centre for Solar Physics (RoCS), University of Oslo.
+
+## Development
+
+Contributions are welcome! Please open an issue or submit a pull request on GitHub. Remember to follow the code style and run "pre-commit run --all-files" before committing.
