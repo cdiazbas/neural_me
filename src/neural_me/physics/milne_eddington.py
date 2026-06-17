@@ -6,17 +6,18 @@ with automatic backend selection (PyTorch or C++).
 """
 
 
-def MilneEddington(nlinea=None, backend="torch", compile=False, **kwargs):
+def MilneEddington(line=None, backend="torch", compile=False, nlinea=None, **kwargs):
     """
     Create a Milne-Eddington synthesis model.
 
     Factory function that returns the appropriate backend implementation.
 
     Args:
-        nlinea: Line identifier (e.g., 1 for Fe I 6301.5)
+        line: Spectral line — wavelength in Å (e.g. 6302, 6173) or line ID (1-7).
         backend: 'torch' (default) or 'cpp'
         compile: If True and backend='torch', use torch.compile for speedup.
                  Recommended for large batches. Skip for small cases to avoid overhead.
+        nlinea: Deprecated alias for line (kept for backward compatibility).
         **kwargs: Additional arguments for C++ backend:
             - lambda_axis: wavelength grid (required for C++)
             - mu: viewing angle cosine (default: 1.0)
@@ -30,15 +31,19 @@ def MilneEddington(nlinea=None, backend="torch", compile=False, **kwargs):
         MilneEddingtonTorch or MilneEddingtonCpp instance
 
     Examples:
-        >>> # PyTorch backend (default, no compile)
-        >>> model = MilneEddington(nlinea=1)
-
-        >>> # PyTorch backend with compile (for large runs)
-        >>> model = MilneEddington(nlinea=1, compile=True)
-
-        >>> # C++ backend
-        >>> model = MilneEddington(nlinea=1, backend='cpp', lambda_axis=wl)
+        >>> model = MilneEddington(line=6302)
+        >>> model = MilneEddington(line=6173, compile=True)
+        >>> model = MilneEddington(line=6302, backend='cpp', lambda_axis=wl)
     """
+    # Backward compat: nlinea= still accepted
+    if line is None and nlinea is not None:
+        line = nlinea
+    # Resolve wavelength → line ID
+    from neural_me.physics.lineas import get_lineas, get_line_by_wavelength
+    if line is not None and line not in set(get_lineas().keys()):
+        line_info = get_line_by_wavelength(line)
+        line = line_info.line_id
+    nlinea = line
     if backend == "torch":
         from .milne_eddington_torch import MilneEddingtonTorch
 
@@ -72,6 +77,7 @@ def get_available_backends():
     backends = {"torch": True}  # PyTorch always available
 
     try:
+        from .milne_eddington_cpp import MilneEddingtonCPP
         backends["cpp"] = True
     except ImportError:
         backends["cpp"] = False

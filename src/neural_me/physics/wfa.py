@@ -68,26 +68,23 @@ def wfa_initial_conditions(
     else:
         line = get_line(line_id)
 
-    ny, nx, ns, nw = stokes_data.shape
+    spatial_shape = stokes_data.shape[:-2]
+    ns = stokes_data.shape[-2]
+    nw = stokes_data.shape[-1]
     assert ns == 4, f"Expected 4 Stokes parameters, got {ns}"
 
-    # Extract Stokes components
-    I = stokes_data[:, :, 0, :]  # (Ny, Nx, Nw)
-    Q = stokes_data[:, :, 1, :]
-    U = stokes_data[:, :, 2, :]
-    V = stokes_data[:, :, 3, :]
+    # Flatten spatial dimensions first
+    stokes_flat = stokes_data.reshape(-1, ns, nw)
+    I_flat = stokes_flat[:, 0, :]
+    Q_flat = stokes_flat[:, 1, :]
+    U_flat = stokes_flat[:, 2, :]
+    V_flat = stokes_flat[:, 3, :]
 
     # Compute dI/dλ
-    dIdw = _centered_derivative(wavelengths, I)
+    dIdw_flat = _centered_derivative(wavelengths, I_flat)
 
     # WFA constant: C = -4.67e-13 * λ₀²
     C = -4.67e-13 * line.cw**2
-
-    # Flatten spatial dimensions for vectorized computation
-    V_flat = V.reshape(ny * nx, nw)
-    Q_flat = Q.reshape(ny * nx, nw)
-    U_flat = U.reshape(ny * nx, nw)
-    dIdw_flat = dIdw.reshape(ny * nx, nw)
 
     # === Blos from Stokes V ===
     # Blos = Σ(V * dI/dλ) / (C * geff * Σ(dI/dλ)²)
@@ -98,23 +95,27 @@ def wfa_initial_conditions(
     # === Btrans from Stokes Q, U ===
     # Need to avoid line core where dI/dλ ~ 0
     # Use scaling: scl = 1/|λ| for |λ| > vdop, else 0
-    vdop = 0.035  # Typical Doppler width in Å
+    vdop = 0.035*4  # Typical Doppler width in Å
     scl = np.where(np.abs(wavelengths) > vdop, 1.0 / (np.abs(wavelengths) + 1e-10), 0.0)
     dIdw_scl = dIdw_flat * scl
 
-    # BtQ² ∝ Σ(Q * dI/dλ_scaled) / (C² * Gg * Σ(dI/dλ_scaled)²)
+    # BtQ_sq and BtU_sq represent Btrans^2 * cos(2*xi) and Btrans^2 * sin(2*xi) respectively
     denom_t = 0.75 * C**2 * line.Gg * np.sum(dIdw_scl**2, axis=-1)
 
     BtQ_sq = np.sum(Q_flat * dIdw_scl, axis=-1) / (denom_t + 1e-12)
-    BtQ = np.sign(BtQ_sq) * np.sqrt(np.abs(BtQ_sq))
-
     BtU_sq = np.sum(U_flat * dIdw_scl, axis=-1) / (denom_t + 1e-12)
-    BtU = np.sign(BtU_sq) * np.sqrt(np.abs(BtU_sq))
 
-    # Reshape back to (Ny, Nx)
-    Blos = Blos.reshape(ny, nx).astype(np.float32)
-    BtQ = BtQ.reshape(ny, nx).astype(np.float32)
-    BtU = BtU.reshape(ny, nx).astype(np.float32)
+    # Compute transverse field magnitude: Btrans = (BtQ_sq^2 + BtU_sq^2)^0.25
+    Bt_trans = (BtQ_sq**2 + BtU_sq**2)**0.25
+
+    # Compute BQ and BU as Btrans * cos(2*xi) and Btrans * sin(2*xi)
+    BtQ = BtQ_sq / (Bt_trans + 1e-12)
+    BtU = BtU_sq / (Bt_trans + 1e-12)
+
+    # Reshape back to original spatial shape
+    Blos = Blos.reshape(spatial_shape).astype(np.float32)
+    BtQ = BtQ.reshape(spatial_shape).astype(np.float32)
+    BtU = BtU.reshape(spatial_shape).astype(np.float32)
 
     return Blos, BtQ, BtU
 
@@ -126,13 +127,17 @@ def wfa_thermodynamic_estimates(
     Estimate thermodynamic parameters S0 and S1 from Stokes I.
 
     Args:
-        stokes_data: 4D array (Ny, Nx, 4, Nw) of Stokes [I, Q, U, V]
+        stokes_data: Array of Stokes data. Accepts:
+                     - 4D (Ny, Nx, 4, Nw) — spatial grid
+                     - 3D (N_pixels, 4, Nw) — flat batch
         continuum_idx: Index of continuum wavelength point
 
     Returns:
-        Tuple of (S0, S1): Each is 2D array (Ny, Nx)
+        Tuple of (S0, S1): Arrays with spatial shape (...) matching stokes_data
     """
-    I = stokes_data[:, :, 0, :]  # (Ny, Nx, Nw)
+    # Support both 4D (Ny, Nx, 4, Nw) and flat 3D (N, 4, Nw)
+    spatial_shape = stokes_data.shape[:-2]
+    I = stokes_data[..., 0, :]  # (..., Nw)
 
     # S0 ≈ min(I) (line core)
     S0 = np.min(I, axis=-1).astype(np.float32)

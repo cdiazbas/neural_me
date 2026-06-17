@@ -194,9 +194,6 @@ def fvoigt_humlicek(damp, vv):
 
     More accurate than Hui's method, especially in line core.
     """
-    damp.device
-    damp.dtype
-
     # Ensure inputs are complex-compatible
     a = damp.float()
     v = vv.float()
@@ -335,7 +332,9 @@ def fvoigt(damp, vv, method="hui"):
     Args:
         damp: Damping parameter (a)
         vv: Velocity/frequency parameter (v)
-        method: "humlicek" (default, accurate, matches C++) or "hui" (fast)
+        method: "hui" (default, fast) or "humlicek" (accurate, matches C++ backend).
+                Note: Using "hui" (default) causes numerical differences vs. the C++ backend
+                which always uses Humlicek. Use "humlicek" for maximum C++/Torch parity.
 
     Returns:
         [H, F]: Voigt profile H and Faraday-Voigt profile F

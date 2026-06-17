@@ -4,49 +4,75 @@ Base Atmosphere Module.
 Defines the `Atmosphere` abstract base class and `SlicedAtmosphere`.
 """
 
+import math
 import numpy as np
 import torch
 import torch.nn as nn
 from abc import ABC, abstractmethod
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Tuple
 
 
 # --- Standardized Default Values (Single Source of Truth) ---
 DEFAULT_NORMALIZATION = {
     # Magnetic field components (Gauss)
-    "B": 500.0,  # Total magnetic field strength
-    "Blos": 500.0,  # Line-of-sight component
-    "BQ": 500.0,  # Stokes Q component
-    "BU": 500.0,  # Stokes U component
+    "B": 500.0,      # Total magnetic field strength
+    "Blos": 500.0,   # Line-of-sight component
+    "BQ": 500.0,     # Stokes Q component
+    "BU": 500.0,     # Stokes U component
     # Magnetic field angles (radians)
-    "gamma": 1.0,  # Inclination angle [0, π]
-    "xi": 1.0,  # Azimuth angle [0, 2π]
+    "gamma": 1.0,    # Inclination angle [0, π]
+    "xi": 1.0,       # Azimuth angle [0, 2π]
     # Thermodynamic parameters
-    "vlos": 2.0,  # Line-of-sight velocity (km/s)
-    "eta0": 100.0,  # Line-to-continuum absorption ratio
-    "a": 0.2,  # Damping parameter
-    "ddop": 1.0,  # Doppler width (Angstrom)
+    "vlos": 2.0,     # Line-of-sight velocity (km/s)
+    "eta0": 100.0,   # Line-to-continuum absorption ratio
+    "a": 0.2,        # Damping parameter
+    "ddop": 1.0,     # Doppler width (Angstrom)
     # Source function parameters
-    "S0": 1.0,  # Source function constant
-    "S1": 1.0,  # Source function gradient
+    "S0": 1.0,       # Source function constant
+    "S1": 1.0,       # Source function gradient
 }
 
 DEFAULT_PARAMETERS = {
     # Magnetic field
     "Blos": 500.0,
-    "BQ": 500.0,
-    "BU": 500.0,
-    "B": 500.0,
+    "BQ":   500.0,
+    "BU":   500.0,
+    "B":    500.0,
     "gamma": 1.0,
-    "xi": 1.0,
+    "xi":    1.0,
     # Thermodynamic
-    "vlos": 0.0,
-    "eta0": 50.0,
-    "a": 0.2,
-    "ddop": 0.02,
+    "vlos":  0.0,
+    "eta0":  50.0,
+    "a":     0.2,
+    "ddop":  0.02,
     # Source function
     "S0": 0.5,
     "S1": 0.5,
+}
+
+# --- Physical Clamp Bounds (Single Source of Truth) ---
+# All values are in PHYSICAL units (same as the parameter they bound).
+# Subclasses derive their normalized clamp values by dividing by their norm dict.
+#
+# Format: { parameter_name: (min_physical, max_physical) }
+#   None means no bound on that side (open interval).
+DEFAULT_CLAMP_BOUNDS = {
+    # Magnetic field [Gauss]
+    "B":    (0.0,    3500.0),  # Total field: must be non-negative
+    "Blos": (-3500.0, 3500.0), # LOS component: signed
+    "BQ":   (-3500.0, 3500.0), # Q component: signed
+    "BU":   (-3500.0, 3500.0), # U component: signed
+    # Magnetic field angles [radians]
+    "gamma": (0.0, math.pi),   # Inclination: [0, π]
+    "xi":    (0.0, math.pi),   # Azimuth half-period: [0, π]
+    # Thermodynamic
+    "vlos":  (-5.0,  5.0),   # LOS velocity [km/s]
+    "eta0":  (0.01,  600.0),   # Line-to-continuum ratio
+    "a":     (0.001,   1.0),   # Voigt damping parameter
+    "ddop":  (0.01,    0.2),   # Doppler width [Å]
+    # Source function
+    "S0":    (0.01,   1.5),    # Source function constant
+    "S1":    (0.01,   1.5),    # Source function gradient
 }
 
 
@@ -56,15 +82,86 @@ class Atmosphere(nn.Module, ABC):
 
     An Atmosphere defines the physical state of the solar plasma for ME
     Synthesis. It is an nn.Module, so it can hold learnable parameters.
+
+    Physical parameter bounds are centralized in `DEFAULT_CLAMP_BOUNDS`
+    (module-level dict). Subclasses should call `_clamp_normalized()` or
+    `_clamp_physical()` inside their `clamp_parameters()` implementations
+    rather than hardcoding numeric limits.
     """
 
     DEFAULT_NORMALIZATION = DEFAULT_NORMALIZATION
-    DEFAULT_PARAMETERS = DEFAULT_PARAMETERS
+    DEFAULT_PARAMETERS    = DEFAULT_PARAMETERS
+    DEFAULT_CLAMP_BOUNDS  = DEFAULT_CLAMP_BOUNDS
 
     def __init__(self):
         super().__init__()
 
-    # --- Abstract Physical Properties (Must be implemented by subclasses) ---
+    # ------------------------------------------------------------------ #
+    #  Clamp helpers — use these in subclass clamp_parameters()
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _inv_softplus_scalar(x: float, eps: float = 1e-7) -> float:
+        """
+        Numerically stable inverse of ``F.softplus`` for a **scalar** value.
+
+        Returns ``y`` such that ``softplus(y) ≈ x``.
+
+        Uses the identity: ``softplus⁻¹(x) = x + log(1 − exp(−x))``,
+        which is equivalent to ``log(exp(x) − 1)`` but avoids overflow for
+        large ``x`` by using ``log(-expm1(-x))``.
+
+        Args:
+            x:   The positive value to invert. Values ≤ 0 are clamped to ``eps``.
+            eps: Minimum value before applying the formula (prevents log(0)).
+
+        Returns:
+            Scalar float: the pre-softplus raw value corresponding to ``x``.
+
+        Example::
+
+            hi_raw = Atmosphere._inv_softplus_scalar(hi_phys / norm)
+            self._eta0_raw.clamp_(max=hi_raw)
+        """
+        x = max(x, eps)
+        return x + math.log(-math.expm1(-x))
+
+    def _clamp_bounds(self, name: str, norm: Optional[float] = None
+                      ) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Return the ``(min, max)`` clamp bounds for parameter *name* scaled to
+        the internal storage space.
+
+        For **linearly normalized** parameters (``stored = physical / norm``),
+        pass ``norm`` and apply the returned tuple directly::
+
+            lo, hi = self._clamp_bounds("vlos", self.norm["vlos"])
+            self._vlos.clamp_(lo, hi)
+
+        For **softplus pre-activation** parameters, use this to get the
+        normalized bounds, then pass each through
+        :meth:`_inv_softplus_scalar` to reach raw space::
+
+            lo_norm, hi_norm = self._clamp_bounds("eta0", self.norm["eta0"])
+            hi_raw = self._inv_softplus_scalar(hi_norm)
+            self._eta0_raw.clamp_(max=hi_raw)   # lower bound not needed (softplus > 0)
+
+        Args:
+            name: Parameter name — must be a key in :attr:`DEFAULT_CLAMP_BOUNDS`.
+            norm: Normalization factor. Returns ``(lo_phys/norm, hi_phys/norm)``.
+                  Pass ``None`` or ``1.0`` to get raw physical bounds.
+
+        Returns:
+            ``(lo, hi)`` as floats.
+        """
+        lo_phys, hi_phys = self.DEFAULT_CLAMP_BOUNDS[name]
+        if norm is None or norm == 1.0:
+            return lo_phys, hi_phys
+        return lo_phys / norm, hi_phys / norm
+
+    # ------------------------------------------------------------------ #
+    #  Abstract Physical Properties (Must be implemented by subclasses)
+    # ------------------------------------------------------------------ #
     # All properties must return tensors in PHYSICAL units.
 
     @property
@@ -163,11 +260,8 @@ class Atmosphere(nn.Module, ABC):
         """
         stack = self.to_stack().detach().cpu().numpy()
 
-        # Wrap azimuth to [0, pi]
-        phiB = stack[..., 2]
-        phiB[phiB < 0] += np.pi
-        phiB[phiB > np.pi] -= np.pi
-        stack[..., 2] = phiB
+        # Wrap azimuth robustly to [0, π) for any number of periods
+        stack[..., 2] = np.remainder(stack[..., 2], np.pi)
 
         return stack
 

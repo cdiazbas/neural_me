@@ -43,7 +43,14 @@ class SphericalAtmosphere(Atmosphere):
 
         self._init_params(init_type)
 
-    def _init_params(self, init_type):
+    def _init_params(self, init_type: str):
+        """
+        Allocate and initialize all learnable parameters in normalized space.
+
+        Args:
+            init_type: ``'default'`` uses :attr:`DEFAULT_PARAMETERS` divided by
+                       norm. ``'zeros'`` initializes all normalized params to 0.
+        """
         def make_param(val):
             return nn.Parameter(torch.ones(self.n_elements, device=self.device) * val)
 
@@ -52,17 +59,18 @@ class SphericalAtmosphere(Atmosphere):
             for k in d:
                 d[k] = 0.0
 
-        self._B = make_param(d["B"] / self.norm["B"])
-        self._gamma = make_param(d["gamma"] / self.norm["gamma"])
-        self._xi = make_param(d["xi"] / self.norm["xi"])
+        self._B    = make_param(d["B"]    / self.norm["B"])
+        self._gamma= make_param(d["gamma"]/ self.norm["gamma"])
+        self._xi   = make_param(d["xi"]   / self.norm["xi"])
         self._vlos = make_param(d["vlos"] / self.norm["vlos"])
         self._eta0 = make_param(d["eta0"] / self.norm["eta0"])
-        self._a = make_param(d["a"] / self.norm["a"])
+        self._a    = make_param(d["a"]    / self.norm["a"])
         self._ddop = make_param(d["ddop"] / self.norm["ddop"])
-        self._S0 = make_param(d["S0"] / self.norm["S0"])
-        self._S1 = make_param(d["S1"] / self.norm["S1"])
+        self._S0   = make_param(d["S0"]   / self.norm["S0"])
+        self._S1   = make_param(d["S1"]   / self.norm["S1"])
 
-    def _expand(self, tensor):
+    def _expand(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Reshape flat tensor to ``self.grid_shape`` (no-op when masked)."""
         if self.is_masked:
             return tensor
         return tensor.view(*self.grid_shape)
@@ -104,6 +112,7 @@ class SphericalAtmosphere(Atmosphere):
         return self._expand(self._S1 * self.norm["S1"])
 
     def set_parameters(self, params: Dict[str, Any]):
+        """Set parameters from a dict of physical values."""
         with torch.no_grad():
             for k, v in params.items():
                 if isinstance(v, (np.ndarray, float, int)):
@@ -135,11 +144,33 @@ class SphericalAtmosphere(Atmosphere):
                     self._S1.copy_(t / self.norm["S1"])
 
     def clamp_parameters(self):
+        """
+        Enforce physical parameter bounds on the normalized internal tensors.
+
+        Parameters are stored as ``_param = physical / norm``, so the clamp
+        bounds are divided by the same norm factor before applying.
+        All physical bounds are defined in :attr:`DEFAULT_CLAMP_BOUNDS`.
+        """
         with torch.no_grad():
-            self._B.clamp_(min=0.0)  # B > 0
-            self._vlos.clamp_(-2.5, 2.5)
-            self._eta0.clamp_(0.0001, 6.0)
-            self._a.clamp_(0.005, 5.0)
-            self._ddop.clamp_(0.01, 0.2)
-            self._S0.clamp_(min=0.01)
-            self._S1.clamp_(min=0.01)
+            lo, hi = self._clamp_bounds("B", self.norm["B"])
+            self._B.clamp_(lo, hi)
+
+            lo, hi = self._clamp_bounds("gamma", self.norm["gamma"])
+            self._gamma.clamp_(lo, hi)
+
+            # xi is periodic — wrap, don't clamp
+            # (handled by to_numpy_stack via np.remainder)
+
+            lo, hi = self._clamp_bounds("vlos", self.norm["vlos"])
+            self._vlos.clamp_(lo, hi)
+            lo, hi = self._clamp_bounds("eta0", self.norm["eta0"])
+            self._eta0.clamp_(lo, hi)
+            lo, hi = self._clamp_bounds("a", self.norm["a"])
+            self._a.clamp_(lo, hi)
+            lo, hi = self._clamp_bounds("ddop", self.norm["ddop"])
+            self._ddop.clamp_(lo, hi)
+            lo, hi = self._clamp_bounds("S0", self.norm["S0"])
+            self._S0.clamp_(lo, hi)
+            lo, hi = self._clamp_bounds("S1", self.norm["S1"])
+            self._S1.clamp_(lo, hi)
+

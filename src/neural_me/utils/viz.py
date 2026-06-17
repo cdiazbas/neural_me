@@ -16,7 +16,7 @@ from typing import Tuple, List, Union
 # =============================================================================
 
 LEGACY_PARAMS = {
-    "axes.linewidth": 1.8,
+    "axes.linewidth": 1.4,
     "axes.titlesize": 18.0,
     "legend.frameon": False,
     "lines.linewidth": 2.5,
@@ -26,6 +26,35 @@ LEGACY_PARAMS = {
     "ytick.minor.visible": True,
     "image.interpolation": "nearest",
     "image.origin": "lower",
+
+    "ytick.labelleft": True,
+    "ytick.labelright": False,
+    "ytick.labelsize": 10,
+    "ytick.major.left": True,
+    "ytick.major.pad": 2.0,
+    "ytick.major.right": True,
+    "ytick.major.size": 6.0,
+    "ytick.major.width": 1.2,
+    "ytick.minor.left": True,
+    "ytick.minor.pad": 3,
+    "ytick.minor.right": True,
+    "ytick.minor.size": 3.5,
+    "ytick.minor.visible": True,
+    "ytick.minor.width": 1.0,
+    
+    "xtick.labelbottom": True,
+    "xtick.labelsize": 10,
+    "xtick.major.bottom": True,
+    "xtick.major.pad": 2.0,
+    "xtick.major.top": True,
+    "xtick.major.size": 6.0,
+    "xtick.major.width": 1.2,
+    "xtick.minor.bottom": True,
+    "xtick.minor.pad": 3.0,
+    "xtick.minor.top": True,
+    "xtick.minor.size": 3.0,
+    "xtick.minor.visible": True,
+    "xtick.minor.width": 1.0,
 }
 
 

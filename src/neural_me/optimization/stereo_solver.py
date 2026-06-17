@@ -43,14 +43,18 @@ class LegacyActiveOperator(DegradationOperator):
         I, Q, U, V = stokes
         cali = atmosphere.cali
 
-        # Logic from ME_combinado line 162:
-        # outstokes2 = (cali)*stokes2 + (1-self.cali)*stokes2
-        # We apply this to each component.
+        # Correct stray-light mixing: weighted combination of pixel stokes with
+        # spatial mean (background scattered light).
+        # Legacy script line 162 intended: out = (cali)*stokes + (1-cali)*<stokes>
+        I_mean = I.mean(dim=0, keepdim=True)
+        Q_mean = Q.mean(dim=0, keepdim=True)
+        U_mean = U.mean(dim=0, keepdim=True)
+        V_mean = V.mean(dim=0, keepdim=True)
 
-        I_new = cali * I + (1.0 - cali) * I
-        Q_new = cali * Q + (1.0 - cali) * Q
-        U_new = cali * U + (1.0 - cali) * U
-        V_new = cali * V + (1.0 - cali) * V
+        I_new = cali * I + (1.0 - cali) * I_mean
+        Q_new = cali * Q + (1.0 - cali) * Q_mean
+        U_new = cali * U + (1.0 - cali) * U_mean
+        V_new = cali * V + (1.0 - cali) * V_mean
 
         return I_new, Q_new, U_new, V_new
 

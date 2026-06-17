@@ -88,6 +88,74 @@ class PixelSolver:
             )
             return
 
+    def set_from_cog(
+        self,
+        Blos: np.ndarray,
+        BtQ: np.ndarray,
+        BtU: np.ndarray,
+        S0: Optional[np.ndarray] = None,
+        S1: Optional[np.ndarray] = None,
+    ):
+        """
+        Set B-field parameters from COG estimates.
+        """
+        self.set_from_wfa(Blos, BtQ, BtU, S0=S0, S1=S1)
+
+
+    def init_from_wfa(self):
+        """
+        Initialize atmospheric parameters using the Weak Field Approximation.
+
+        Computes Blos, BtQ, BtU from Stokes V and Q/U, and S0/S1 from
+        Stokes I using the spectral line already set on the MEProblem.
+        """
+        from neural_me.physics.wfa import wfa_initial_conditions, wfa_thermodynamic_estimates
+
+        stokes_data = self.problem.obs.data  # (Ny, Nx, 4, Nw)
+        if isinstance(stokes_data, torch.Tensor):
+            stokes_data = stokes_data.cpu().numpy()
+
+        wavelengths = self.problem.obs.wavelengths
+        if isinstance(wavelengths, torch.Tensor):
+            wavelengths = wavelengths.cpu().numpy()
+
+        Blos, BtQ, BtU = wfa_initial_conditions(
+            wavelengths, stokes_data,
+            line_id=self.problem.nlinea,
+            use_wavelength_lookup=False,  # nlinea is always a resolved line ID
+        )
+        S0, S1 = wfa_thermodynamic_estimates(stokes_data)
+
+        self.set_from_wfa(Blos, BtQ, BtU, S0=S0, S1=S1)
+
+    def init_from_cog(self):
+        """
+        Initialize atmospheric parameters using the Center of Gravity and Moment methods.
+
+        Computes Blos, BtQ, BtU from Stokes V and Q/U/I, and S0/S1 from
+        Stokes I using the spectral line already set on the MEProblem.
+        """
+        from neural_me.physics.cog import cog_initial_conditions
+        from neural_me.physics.wfa import wfa_thermodynamic_estimates
+
+        stokes_data = self.problem.obs.data  # (Ny, Nx, 4, Nw)
+        if isinstance(stokes_data, torch.Tensor):
+            stokes_data = stokes_data.cpu().numpy()
+
+        wavelengths = self.problem.obs.wavelengths
+        if isinstance(wavelengths, torch.Tensor):
+            wavelengths = wavelengths.cpu().numpy()
+
+        Blos, BtQ, BtU = cog_initial_conditions(
+            wavelengths, stokes_data,
+            line_id=self.problem.nlinea,
+            use_wavelength_lookup=False,  # nlinea is always a resolved line ID
+        )
+        S0, S1 = wfa_thermodynamic_estimates(stokes_data)
+
+        self.set_from_cog(Blos, BtQ, BtU, S0=S0, S1=S1)
+
+
     def solve(
         self,
         n_iterations: int = 100,
@@ -125,7 +193,7 @@ class PixelSolver:
         loss_history = []
         for i in iterator:
             optimizer.zero_grad()
-
+            
             # 1. Compute Loss
             loss, breakdown = self.problem.compute_loss(
                 self.atmosphere, return_breakdown=True

@@ -49,13 +49,16 @@ def smoothness_loss(field_map: torch.Tensor, penalty: str = "l1") -> torch.Tenso
 
     diff = inp - smoothed
 
-    if penalty == "l1":
-        return (
-            torch.mean(torch.abs(diff))
-            if penalty == "mean"
-            else torch.sum(torch.abs(diff))
-        )
-    elif penalty == "l2":
+    pen = penalty.lower()
+    if pen == "mse":
+        pen = "l2"
+
+    if pen in ("l1", "mean"):
+        if pen == "mean" or penalty == "mean":
+            return torch.mean(torch.abs(diff))
+        else:
+            return torch.sum(torch.abs(diff))
+    elif pen == "l2":
         return torch.sum(diff**2)
     else:
         raise ValueError(f"Unknown penalty type: {penalty}")

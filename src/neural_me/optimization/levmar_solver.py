@@ -130,7 +130,7 @@ class LevMarSolver:
         """
         Set per-Stokes noise weights (inverse weights for Chi2).
         """
-        nw = self._n_wav
+        nw = self._n_wav_active
         self._sigma = torch.cat(
             [
                 torch.full((nw,), sigma_I, device=self.device),
@@ -327,34 +327,52 @@ class LevMarSolver:
 
     def _params_to_atmosphere(self, params: torch.Tensor):
         """
-        Set atmosphere from (n_pixels, 9) physical params [B,gamma,xi,...].
-        
-        Detects atmosphere type and sets parameters appropriately:
-        - CartesianAtmosphere: converts spherical [B,gamma,xi] -> Cartesian [Blos,BQ,BU]
-        - Spherical-based atmospheres: uses [B,gamma,xi] directly
+        Set atmosphere from ``(n_pixels, 9)`` physical params
+        ``[B, gamma, xi, vlos, eta0, a, ddop, S0, S1]``.
+
+        **Chain D** (LevMar solver works in physical space): tensors are already
+        in physical units, so clamp bounds are applied directly from
+        :attr:`DEFAULT_CLAMP_BOUNDS` without any normalization division.
+
+        Detects atmosphere type and calls ``set_parameters`` appropriately:
+
+        - ``CartesianAtmosphere``: converts spherical ``[B, gamma, xi]``
+          → Cartesian ``[Blos, BQ, BU]`` before setting.
+        - Spherical-based atmospheres: uses ``[B, gamma, xi]`` directly.
         """
         with torch.no_grad():
-            B = params[:, 0]
+            B     = params[:, 0]
             gamma = params[:, 1]
-            xi = params[:, 2]
-            vlos = params[:, 3]
-            eta0 = params[:, 4]
-            a = params[:, 5]
-            ddop = params[:, 6]
-            S0 = params[:, 7]
-            S1 = params[:, 8]
+            xi    = params[:, 2]
+            vlos  = params[:, 3]
+            eta0  = params[:, 4]
+            a     = params[:, 5]
+            ddop  = params[:, 6]
+            S0    = params[:, 7]
+            S1    = params[:, 8]
 
-            # Clamp physical parameters
-            B = torch.clamp(B, min=0.0, max=4000.0)
-            gamma = torch.clamp(gamma, min=0.0, max=np.pi)
+            # --- Clamp physical parameters using the canonical bounds ---
+            # All values are in physical units (Chain D: no norm division needed).
+            bounds = Atmosphere.DEFAULT_CLAMP_BOUNDS
 
-            # Azimuth wrapping
-            xi = torch.remainder(xi, np.pi)
+            lo_B,    hi_B    = bounds["B"]
+            lo_g,    hi_g    = bounds["gamma"]
+            lo_v,    hi_v    = bounds["vlos"]
+            lo_e,    hi_e    = bounds["eta0"]
+            lo_a,    hi_a    = bounds["a"]
+            lo_d,    hi_d    = bounds["ddop"]
+            lo_S0,   hi_S0   = bounds["S0"]
+            lo_S1,   hi_S1   = bounds["S1"]
 
-            eta0 = torch.clamp(eta0, min=50.0, max=150.0)
-            a = torch.clamp(a, min=0.2, max=0.5)
-            ddop = torch.clamp(ddop, min=0.02, max=0.08)
-            vlos = torch.clamp(vlos, min=-3.0, max=3.0)
+            B    = torch.clamp(B,    min=lo_B,   max=hi_B)
+            gamma= torch.clamp(gamma,min=lo_g,   max=hi_g)
+            xi   = torch.remainder(xi, np.pi)   # periodic — wrap instead of clamp
+            vlos = torch.clamp(vlos, min=lo_v,   max=hi_v)
+            eta0 = torch.clamp(eta0, min=lo_e,   max=hi_e)
+            a    = torch.clamp(a,    min=lo_a,   max=hi_a)
+            ddop = torch.clamp(ddop, min=lo_d,   max=hi_d)
+            S0   = torch.clamp(S0,   min=lo_S0,  max=hi_S0)
+            S1   = torch.clamp(S1,   min=lo_S1,  max=hi_S1)
 
             from neural_me.core.atmospheres import CartesianAtmosphere
 
@@ -367,39 +385,39 @@ class LevMarSolver:
             if isinstance(self.atmosphere, CartesianAtmosphere):
                 # CartesianAtmosphere expects Cartesian components (flattened)
                 Blos = B * torch.cos(gamma)
-                Bt = B * torch.sin(gamma)
-                BQ = Bt * torch.cos(2.0 * xi)
-                BU = Bt * torch.sin(2.0 * xi)
+                Bt   = B * torch.sin(gamma)
+                BQ   = Bt * torch.cos(2.0 * xi)
+                BU   = Bt * torch.sin(2.0 * xi)
 
                 self.atmosphere.set_parameters(
                     {
                         "Blos": Blos,
-                        "BQ": BQ,
-                        "BU": BU,
+                        "BQ":   BQ,
+                        "BU":   BU,
                         "vlos": vlos,
                         "eta0": eta0,
-                        "a": a,
+                        "a":    a,
                         "ddop": ddop,
-                        "S0": S0,
-                        "S1": S1,
+                        "S0":   S0,
+                        "S1":   S1,
                     }
                 )
             else:
-                # Spherical-based atmospheres (SphericalAtmosphere, SphericalSoftplusAtmosphere)
-                # Use spherical parameters directly, reshaped to grid_shape
+                # Spherical-based atmospheres: use spherical parameters directly
                 self.atmosphere.set_parameters(
                     {
-                        "B": reshape_if_needed(B),
+                        "B":     reshape_if_needed(B),
                         "gamma": reshape_if_needed(gamma),
-                        "xi": reshape_if_needed(xi),
-                        "vlos": reshape_if_needed(vlos),
-                        "eta0": reshape_if_needed(eta0),
-                        "a": reshape_if_needed(a),
-                        "ddop": reshape_if_needed(ddop),
-                        "S0": reshape_if_needed(S0),
-                        "S1": reshape_if_needed(S1),
+                        "xi":    reshape_if_needed(xi),
+                        "vlos":  reshape_if_needed(vlos),
+                        "eta0":  reshape_if_needed(eta0),
+                        "a":     reshape_if_needed(a),
+                        "ddop":  reshape_if_needed(ddop),
+                        "S0":    reshape_if_needed(S0),
+                        "S1":    reshape_if_needed(S1),
                     }
                 )
+
 
     # ------------------------------------------------------------------ #
     #  Main inversion loop (matching pyMilne's fitData faithfully)
@@ -495,6 +513,7 @@ class LevMarSolver:
         if verbose:
             iterator = trange(max_iter, desc="LM", leave=True)
 
+        it = -1
         for it in iterator:
             # Start from best model each time (as in C++)
             trial_params = best_params.clone()
@@ -633,7 +652,7 @@ class LevMarSolver:
             "chi2_history": self.chi2_history,
             "l1_history": self.l1_history,
             "lambda_history": self.lambda_history,
-            "n_iterations": it + 1 if "it" in dir() else 0,
+            "n_iterations": it + 1,
         }
 
     def get_atmosphere(self) -> Atmosphere:

@@ -85,19 +85,18 @@ class SphericalSoftplusAtmosphere(Atmosphere):
         return x
 
     def _inv_softplus(
-        self, x: Union[float, np.ndarray, torch.Tensor], epsilon=1e-6
+        self, x: Union[float, np.ndarray, torch.Tensor], epsilon=1e-7
     ) -> Union[float, np.ndarray, torch.Tensor]:
-        """Inverse softplus: log(exp(x) - 1)."""
-        # Ensure x is large enough to avoid log(neg)
+        """Numerically stable inverse softplus: y = x + log(-expm1(-x))."""
         if isinstance(x, (int, float)):
             x = max(x, epsilon)
-            return np.log(np.exp(x) - 1.0)
+            return x + np.log(-np.expm1(-x))
         elif isinstance(x, np.ndarray):
             x = np.maximum(x, epsilon)
-            return np.log(np.exp(x) - 1.0)
+            return x + np.log(-np.expm1(-x))
         elif isinstance(x, torch.Tensor):
             x = torch.clamp(x, min=epsilon)
-            return torch.log(torch.exp(x) - 1.0)
+            return x + torch.log(-torch.expm1(-x))
         return x
 
     def _inv_sigmoid(
@@ -115,11 +114,6 @@ class SphericalSoftplusAtmosphere(Atmosphere):
             x = torch.clamp(x, min=epsilon, max=1.0 - epsilon)
             return torch.log(x / (1.0 - x))
         return x
-
-    def _init_parameters(self, initial_values: Optional[Dict[str, Any]]):
-        """
-        Initialize parameters, converting physical values to raw storage.
-        """
 
     def _init_parameters(self, initial_values: Optional[Dict[str, Any]]):
         """
@@ -203,11 +197,61 @@ class SphericalSoftplusAtmosphere(Atmosphere):
 
     def clamp_parameters(self):
         """
-        Softplus handles the lower bound (0).
+        Enforce upper physical bounds on softplus pre-activation parameters.
 
-        We might want upper bounds.
+        **Chain B** (softplus-parameterized): ``physical = softplus(raw) * norm``
+
+        Since ``softplus`` already guarantees positivity, only **upper** bounds
+        need to be enforced in raw space.  The lower physical bound is
+        inherently satisfied (softplus output > 0 always).
+
+        For each softplus parameter:
+
+        .. code-block:: text
+
+            hi_normalized = hi_physical / norm
+            hi_raw        = inv_softplus(hi_normalized)
+            raw.clamp_(max=hi_raw)
+
+        ``vlos`` and ``xi`` are linearly normalized (not softplus), so they
+        use **Chain A** (clamp normalized value to physical bounds / norm).
+        ``gamma`` uses a sigmoid, already constrained to (0, π) — no clamping needed.
         """
-        pass  # Generally not needed for softplus, but maybe for stability?
+        with torch.no_grad():
+            # --- Softplus parameters: clamp upper bound in raw space ---
+            # B: physical in [0, 4000] G — only upper bound needed
+            _, hi_norm = self._clamp_bounds("B", self.norm["B"])
+            self._B_raw.clamp_(max=self._inv_softplus_scalar(hi_norm))
+
+            # eta0: physical in [0.01, 600]
+            _, hi_norm = self._clamp_bounds("eta0", self.norm["eta0"])
+            self._eta0_raw.clamp_(max=self._inv_softplus_scalar(hi_norm))
+
+            # a: physical in [0.001, 1.0]
+            _, hi_norm = self._clamp_bounds("a", self.norm["a"])
+            self._a_raw.clamp_(max=self._inv_softplus_scalar(hi_norm))
+
+            # ddop: physical in [0.01, 0.2]
+            _, hi_norm = self._clamp_bounds("ddop", self.norm["ddop"])
+            self._ddop_raw.clamp_(max=self._inv_softplus_scalar(hi_norm))
+
+            # S0: physical in [0.01, 1.5]
+            _, hi_norm = self._clamp_bounds("S0", self.norm["S0"])
+            self._S0_raw.clamp_(max=self._inv_softplus_scalar(hi_norm))
+
+            # S1: physical in [0.01, 1.5]
+            _, hi_norm = self._clamp_bounds("S1", self.norm["S1"])
+            self._S1_raw.clamp_(max=self._inv_softplus_scalar(hi_norm))
+
+            # --- Linear parameters (Chain A): clamp normalized value ---
+            # vlos: physical in [-10, 10] km/s → normalized / norm
+            lo, hi = self._clamp_bounds("vlos", self.norm["vlos"])
+            self._vlos.clamp_(lo, hi)
+
+            # xi: periodic — no clamp (wrap handled by to_numpy_stack)
+
+            # gamma: sigmoid → already in (0, π) — no clamp needed
+
 
     # --- Properties ---
     @property

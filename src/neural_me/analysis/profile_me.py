@@ -19,7 +19,7 @@ def profile_me_model(batch_size=4096, n_lambda=128, steps=10):
 
     # Init model
     nlinea = 4
-    model = MilneEddington(nlinea=nlinea)
+    model = MilneEddington(line=nlinea)
 
     # Move to GPU if available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

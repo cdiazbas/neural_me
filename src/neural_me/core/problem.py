@@ -22,7 +22,7 @@ class MEProblem:
     def __init__(
         self,
         observation: Observation,
-        nlinea: int = 4,
+        line: int = 6302,
         weights: List[float] = [1.0, 1.0, 1.0, 1.0],
         loss_type: str = "mse",
         regularization_weights: Optional[Dict[str, float]] = None,
@@ -35,7 +35,7 @@ class MEProblem:
         """
         Args:
             observation: The observed data.
-            nlinea: Index for parameter line configuration.
+            line: Spectral line — accepts wavelength in Å (e.g. 6302, 6173) or line ID (1-7).
             weights: Loss weights for [Stokes I, Q, U, V].
             loss_type: 'mse' or 'l1'.
             regularization_weights: Dict mapping parameter names (or 'all') to spatial smoothing weights.
@@ -52,6 +52,19 @@ class MEProblem:
         self.obs = observation
         self.loss_type = loss_type.lower()
         self.regularization_weights = regularization_weights
+
+        # Resolve line: accept wavelength in Å (e.g. 6302, 6173) or line ID (1-7)
+        from neural_me.physics.lineas import get_lineas, get_line_by_wavelength
+        known_ids = set(get_lineas().keys())
+        if line not in known_ids:
+            # Treat as wavelength — find nearest line
+            line_info = get_line_by_wavelength(line)
+            print(f"MEProblem: wavelength {line} → Line ID={line_info.line_id} ({line_info.element} {line_info.cw:.3f} Å)")
+            nlinea = line_info.line_id
+        else:
+            nlinea = line
+
+        self.nlinea = nlinea  # stored for downstream use (e.g. WFA init)
 
         # Backend Auto-Detection
         if backend == "auto":
@@ -100,6 +113,8 @@ class MEProblem:
 
         # Initialize Physics Model with chosen backend
         # We pass precision only if backend is cpp, but kwargs can handle it generally
+        kwargs.pop("nlinea", None)
+        kwargs.pop("line", None)
         self.model = MilneEddington(
             nlinea=nlinea,
             backend=backend,
@@ -129,7 +144,7 @@ class MEProblem:
         # unless it's a contiguous patch.
         # For now, assume atmosphere has grid_shape populated if we want spatial reg.
 
-        if atmosphere.grid_shape is None:
+        if len(atmosphere.grid_shape) < 2:
             return torch.tensor(0.0, device=self.device)
 
         reg_loss = torch.tensor(0.0, device=self.device)
@@ -163,8 +178,12 @@ class MEProblem:
         for i, name in enumerate(param_names):
             if name in self.regularization_weights:
                 w = self.regularization_weights[name]
-                # Slice specific channel
-                param_map = stack_perm[..., i, :, :]
+                # Correctly slice the i-th parameter channel for 3D (9,Ny,Nx)
+                # or 4D (Batch,9,Ny,Nx) tensor
+                if stack_perm.dim() == 3:
+                    param_map = stack_perm[i, :, :]
+                else:
+                    param_map = stack_perm[:, i, :, :]
                 reg_loss += w * smoothness_loss(param_map, penalty=self.loss_type)
 
         return reg_loss

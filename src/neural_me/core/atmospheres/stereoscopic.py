@@ -14,7 +14,8 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Tuple, Optional, Any, Dict
 
-from .base import Atmosphere
+import math
+from .base import Atmosphere, DEFAULT_CLAMP_BOUNDS
 
 
 class StereoscopicAtmosphere(nn.Module):
@@ -126,6 +127,26 @@ class StereoscopicAtmosphere(nn.Module):
     def normalization(self):
         return self._normalization
 
+    # ------------------------------------------------------------------ #
+    #  Clamp helpers (mirrors Atmosphere base class API)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _inv_softplus_scalar(x: float, eps: float = 1e-7) -> float:
+        """Numerically stable inverse softplus for a scalar. See Atmosphere._inv_softplus_scalar."""
+        x = max(x, eps)
+        return x + math.log(-math.expm1(-x))
+
+    def _clamp_bounds(self, name: str, norm: float = 1.0):
+        """Return (lo, hi) clamp bounds in *normalized* space for parameter *name*.
+
+        Delegates to :data:`DEFAULT_CLAMP_BOUNDS` from base.
+        """
+        lo_phys, hi_phys = DEFAULT_CLAMP_BOUNDS[name]
+        if norm == 1.0:
+            return lo_phys, hi_phys
+        return lo_phys / norm, hi_phys / norm
+
     def initialize(self, method: str = "default"):
         """
         Initialize parameters.
@@ -156,97 +177,64 @@ class StereoscopicAtmosphere(nn.Module):
                 ]:
                     p.fill_(1.0)
 
-    def _inverse_softplus(self, x):
+    def _inverse_softplus(self, x, epsilon=1e-7):
         """
-        Inverse of F.softplus: y = log(exp(x) - 1).
-        Includes clamping to prevent NaNs on non-positive inputs.
+        Numerically stable inverse of F.softplus: y = x + log(-expm1(-x)).
         """
-        # x = log(exp(y) + 1) -> exp(y) = exp(x) - 1 -> y = log(exp(x) - 1)
-        # We must ensure exp(x) - 1 > 0  => exp(x) > 1 => x > 0.
-        # Clamp x to a small positive value to handle legacy data inconsistencies.
-        x_clamped = torch.clamp(torch.as_tensor(x), min=1e-7)
-        return torch.log(torch.exp(x_clamped) - 1.0 + 1e-10)
+        x_tensor = torch.as_tensor(x)
+        x_clamped = torch.clamp(x_tensor, min=epsilon)
+        return x_clamped + torch.log(-torch.expm1(-x_clamped))
 
     def set_parameters(self, params: Dict[str, Any]):
         """
-        Set parameters from a dictionary of values.
-
-        Values are assumed to be NORMALIZED physical values (matching
-        legacy meparam). We convert them to raw parameters (inverse
-        softplus/sigmoid) if needed.
+        Set parameters from a dictionary of physical values.
         """
 
-        def set_param(target_raw, value_norm, is_softplus=True):
-            if value_norm is None:
+        def set_param(target_raw, value_phys, norm_val, is_softplus=True):
+            if value_phys is None:
                 return
             val_tensor = torch.as_tensor(
-                value_norm, device=self.device, dtype=torch.float32
+                value_phys, device=self.device, dtype=torch.float32
             )
             if val_tensor.shape != target_raw.shape:
                 val_tensor = val_tensor.reshape(target_raw.shape)
 
             if is_softplus:
-                # Target stores raw, property returns softplus(raw)
-                # We want softplus(raw) = val_norm (since normalization is applied on top usually?
-                # WAIT: In ViewAtmosphere, property returns F.softplus(raw).
-                # It does NOT apply * self.normalization there?
-                # Let's check ViewAtmosphere implementation.
-                # If ViewAtmosphere returns un-normalized physical units?
-                # No, standard Atmosphere properties return PHYSICAL units.
-                # My implementation of ViewAtmosphere (lines 160+) returns `F.softplus(raw)`.
-                # If `raw` roughly maps to `normalized values`, then we are missing the `* norm` factor in ViewAtmosphere!
-                # I MUST FIX ViewAtmosphere properties to multiply by normalization to be physically correct.
-                # Assuming ViewAtmosphere is fixed/correct: property = softplus(raw) * norm.
-                # Then val_norm * norm = property.
-                # So softplus(raw) * norm = val_norm * norm -> softplus(raw) = val_norm.
-                # So raw = inverse_softplus(val_norm).
-                target_raw.data.copy_(self._inverse_softplus(val_tensor))
+                target_raw.data.copy_(self._inverse_softplus(val_tensor / norm_val))
             else:
-                # Linear (vlos)
-                # vlos = raw.
-                # vlos_physical = vlos_norm * norm.
-                # property vlos = raw * norm (if we fix ViewAtmosphere).
-                # So raw = val_norm.
-                target_raw.data.copy_(val_tensor)
+                target_raw.data.copy_(val_tensor / norm_val)
 
-        # 1. Global B (Linear in legacy? Blos/Bn/Bw are raw there)
-        # Legacy: Blos_A = meparam[:,0]*norm[0].
-        # Here: global_Blos is used directly in _compute_magnetic.
-        # And _compute_magnetic expects PHYSICAL units (Gauss).
-        # So if input is normalized, we must multiply by norm.
+        # 1. Global B (Stored in physical units directly)
         if "global_Blos" in params:
             self.global_Blos.data.copy_(
                 torch.as_tensor(params["global_Blos"], device=self.device)
-                * self._normalization["Blos"]
             )
         if "global_Bn" in params:
             self.global_Bn.data.copy_(
                 torch.as_tensor(params["global_Bn"], device=self.device)
-                * self._normalization["Bn"]
             )
         if "global_Bw" in params:
             self.global_Bw.data.copy_(
                 torch.as_tensor(params["global_Bw"], device=self.device)
-                * self._normalization["Bw"]
             )
 
         # 2. Thermo1
         set_param(
-            self.thermo1_vlos, params.get("thermo1_vlos"), is_softplus=False
-        )  # vlos is linear
-        set_param(self.thermo1_eta0_raw, params.get("thermo1_eta0"), is_softplus=True)
-        set_param(self.thermo1_a_raw, params.get("thermo1_a"), is_softplus=True)
-        set_param(self.thermo1_ddop_raw, params.get("thermo1_ddop"), is_softplus=True)
-        set_param(self.thermo1_S0_raw, params.get("thermo1_S0"), is_softplus=True)
-        set_param(self.thermo1_S1_raw, params.get("thermo1_S1"), is_softplus=True)
+            self.thermo1_vlos, params.get("thermo1_vlos"), self._normalization["vlos"], is_softplus=False
+        )
+        set_param(self.thermo1_eta0_raw, params.get("thermo1_eta0"), self._normalization["eta0"], is_softplus=True)
+        set_param(self.thermo1_a_raw, params.get("thermo1_a"), self._normalization["a"], is_softplus=True)
+        set_param(self.thermo1_ddop_raw, params.get("thermo1_ddop"), self._normalization["ddop"], is_softplus=True)
+        set_param(self.thermo1_S0_raw, params.get("thermo1_S0"), self._normalization["S0"], is_softplus=True)
+        set_param(self.thermo1_S1_raw, params.get("thermo1_S1"), self._normalization["S1"], is_softplus=True)
 
         # 3. Thermo2
-        set_param(self.thermo2_vlos, params.get("thermo2_vlos"), is_softplus=False)
-        set_param(self.thermo2_eta0_raw, params.get("thermo2_eta0"), is_softplus=True)
-        set_param(self.thermo2_a_raw, params.get("thermo2_a"), is_softplus=True)
-        set_param(self.thermo2_ddop_raw, params.get("thermo2_ddop"), is_softplus=True)
-        set_param(self.thermo2_S0_raw, params.get("thermo2_S0"), is_softplus=True)
-        set_param(self.thermo2_S1_raw, params.get("thermo2_S1"), is_softplus=True)
+        set_param(self.thermo2_vlos, params.get("thermo2_vlos"), self._normalization["vlos"], is_softplus=False)
+        set_param(self.thermo2_eta0_raw, params.get("thermo2_eta0"), self._normalization["eta0"], is_softplus=True)
+        set_param(self.thermo2_a_raw, params.get("thermo2_a"), self._normalization["a"], is_softplus=True)
+        set_param(self.thermo2_ddop_raw, params.get("thermo2_ddop"), self._normalization["ddop"], is_softplus=True)
+        set_param(self.thermo2_S0_raw, params.get("thermo2_S0"), self._normalization["S0"], is_softplus=True)
+        set_param(self.thermo2_S1_raw, params.get("thermo2_S1"), self._normalization["S1"], is_softplus=True)
 
         # 4. Calibration
         if "cali" in params:
@@ -254,60 +242,53 @@ class StereoscopicAtmosphere(nn.Module):
 
     def clamp_parameters(self):
         """
-        Enforce parameter constraints matching legacy script.
+        Enforce physical parameter bounds on all internal tensors.
 
-        Legacy constraints are on NORMALIZED values. We must clamp raw
-        values such that softplus(raw) implies the normalized range.
-        range_raw = inverse_softplus(range_norm)
+        Two normalization chains are used:
+
+        **Chain A — linear normalized** (``thermo_vlos``):
+            ``stored = physical / norm``
+            → clamp to ``(lo_phys / norm, hi_phys / norm)``
+
+        **Chain B — softplus pre-activation** (all ``_raw`` parameters):
+            ``physical = softplus(raw) * norm``
+            → only upper bound enforced: ``raw.clamp_(max=inv_softplus(hi/norm))``
+            (softplus already guarantees positivity; lower physical bound is satisfied
+            by construction)
+
+        All physical bounds come from :attr:`DEFAULT_CLAMP_BOUNDS`.
         """
+        norm = self._normalization
 
-        def clamp_prop(tensor_raw, min_norm, max_norm, is_softplus=True):
-            if is_softplus:
-                min_raw = self._inverse_softplus(torch.tensor(min_norm)).item()
-                max_raw = self._inverse_softplus(torch.tensor(max_norm)).item()
-                tensor_raw.data.clamp_(min_raw, max_raw)
-            else:
-                # Linear (vlos)
-                # vlos = raw * norm (Wait? No, see below)
-                # If vlos property = raw * norm? Or just raw?
-                # In ViewAtmosphere I need to check. If I assume ViewAtmosphere returns raw * norm_const...
-                # Actually, legacy clamps: meparam[:,3] (normalized) to [-10, 10].
-                # If my raw vlos corresponds to normalized vlos, I clamp to [-10, 10].
-                tensor_raw.data.clamp_(min_norm, max_norm)
+        def clamp_softplus_upper(tensor_raw, name):
+            """Clamp raw softplus parameter to its upper physical bound."""
+            _, hi_norm = self._clamp_bounds(name, norm[name])
+            tensor_raw.data.clamp_(max=self._inv_softplus_scalar(hi_norm))
 
-        # Constraints from ME_combinado:
-        # Vlos: [-10, 10] (normalized? Legacy: `clamp(meparam*norm, -10, 10)/norm`. So clamp value is physical?
-        # NO. `torch.clamp(meparam*norm, -10, 10)/norm` means the PHYSICAL value is clamped to [-10, 10].
-        # If norm=2.0 (vlos), then normalized param is clamped to [-5, 5].
-        # My `thermo_vlos` (if I define it as normalized) should be clamped to [-5, 5].
-        # OR: I clamp physical value [-10, 10].
-        # Let's assume my raw parameters are "normalized-like" because I implemented `set_parameters` assuming they map to `val_norm`.
+        def clamp_linear(tensor_norm, name):
+            """Clamp linearly normalized parameter to physical bounds / norm."""
+            lo, hi = self._clamp_bounds(name, norm[name])
+            tensor_norm.data.clamp_(lo, hi)
 
-        # Vlos (Physical [-10, 10] km/s) -> Normalized / 2.0 -> [-5, 5]
-        clamp_prop(self.thermo1_vlos, -5.0, 5.0, is_softplus=False)
-        clamp_prop(self.thermo2_vlos, -5.0, 5.0, is_softplus=False)
+        # --- Thermodynamic softplus parameters (Chain B) ---
+        for raw in (self.thermo1_eta0_raw, self.thermo2_eta0_raw):
+            clamp_softplus_upper(raw, "eta0")
+        for raw in (self.thermo1_a_raw, self.thermo2_a_raw):
+            clamp_softplus_upper(raw, "a")
+        for raw in (self.thermo1_ddop_raw, self.thermo2_ddop_raw):
+            clamp_softplus_upper(raw, "ddop")
+        for raw in (self.thermo1_S0_raw, self.thermo2_S0_raw):
+            clamp_softplus_upper(raw, "S0")
+        for raw in (self.thermo1_S1_raw, self.thermo2_S1_raw):
+            clamp_softplus_upper(raw, "S1")
 
-        # Ddop (Physical [0.01, 0.2]) -> Normalized / 1.0 -> [0.01, 0.2]
-        clamp_prop(self.thermo1_ddop_raw, 0.01, 0.2, is_softplus=True)
-        clamp_prop(self.thermo2_ddop_raw, 0.01, 0.2, is_softplus=True)
+        # --- vlos: linear normalized (Chain A) ---
+        clamp_linear(self.thermo1_vlos, "vlos")
+        clamp_linear(self.thermo2_vlos, "vlos")
 
-        # S0 (Physical [0.01, 1.5]) -> Normalized / 1.0 -> [0.01, 1.5]
-        clamp_prop(self.thermo1_S0_raw, 0.01, 1.5, is_softplus=True)
-        clamp_prop(self.thermo2_S0_raw, 0.01, 1.5, is_softplus=True)
+        # --- Calibration: physical scalar in [0, 1] ---
+        self.cali.data.clamp_(0.0, 1.0)
 
-        # S1 (Legacy commented out? No, active lines 374 set it. But if we clamp?)
-        # Legacy loop *sets* S1 from data every step. If we optimize it, we should clamp it.
-        # Assuming we optimize it: Physical [0.01, 1.5]
-        clamp_prop(self.thermo1_S1_raw, 0.01, 1.5, is_softplus=True)
-        clamp_prop(self.thermo2_S1_raw, 0.01, 1.5, is_softplus=True)
-
-        # Damp (a) (Physical [0.001, 1.0]) -> Normalized / 0.2 -> [0.005, 5.0]
-        clamp_prop(self.thermo1_a_raw, 0.005, 5.0, is_softplus=True)
-        clamp_prop(self.thermo2_a_raw, 0.005, 5.0, is_softplus=True)
-
-        # Eta0 (Physical [1.0, 700]) -> Normalized / 100.0 -> [0.01, 7.0]
-        clamp_prop(self.thermo1_eta0_raw, 0.01, 7.0, is_softplus=True)
-        clamp_prop(self.thermo2_eta0_raw, 0.01, 7.0, is_softplus=True)
 
     def get_atmosphere(self, instrument_index: int) -> "ViewAtmosphere":
         """
@@ -347,10 +328,10 @@ class ViewAtmosphere(Atmosphere):
 
         if self.index == 0:
             # Identity transformation
-            Btot = torch.sqrt(Blos**2 + Bn**2 + Bw**2)
-            # inc = acos(Blos/Btot)
-            eps = 1e-7
-            inc = torch.acos(torch.clamp(Blos / (Btot + eps), -1.0 + eps, 1.0 - eps))
+            B2 = Blos**2 + Bn**2 + Bw**2 + 1e-8
+            Btot = torch.sqrt(B2)
+            # inc = acos(Blos/Btot); clamp ratio away from ±1 to keep acos gradient finite
+            inc = torch.acos(torch.clamp(Blos / Btot, -1.0 + 1e-6, 1.0 - 1e-6))
             azi = torch.atan2(Bn, Bw)
             return Btot, inc, azi
 
@@ -369,10 +350,10 @@ class ViewAtmosphere(Atmosphere):
             Bw_new = -Blos * sin_g + Bw * cos_g
             Bn_new = Bn
 
-            Btot = torch.sqrt(Blos_new**2 + Bn_new**2 + Bw_new**2)
-            eps = 1e-7
+            B2 = Blos_new**2 + Bn_new**2 + Bw_new**2 + 1e-8
+            Btot = torch.sqrt(B2)
             inc = torch.acos(
-                torch.clamp(Blos_new / (Btot + eps), -1.0 + eps, 1.0 - eps)
+                torch.clamp(Blos_new / Btot, -1.0 + 1e-6, 1.0 - 1e-6)
             )
             azi = torch.atan2(Bn_new, Bw_new) + rot
 
