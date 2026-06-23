@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Tuple
+from typing import Tuple, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,17 +20,37 @@ class DegradationOperator(nn.Module, ABC):
 
 class LegacyActiveOperator(DegradationOperator):
     """
-    Implements the logic found in the active lines of
-    ME_combinado_mecpp_caliV.py.
+    Implements the mixing logic from the legacy `ME_combinado_mecpp_caliV.py`.
 
-    Legacy: out = (cali)*stokes + (1-cali)*<stokes>
+    Mathematical form:
+        out = epsilon * stokes + (1 - epsilon) * <stokes>
+
+    Here, `epsilon` acts as the "clean local light filling factor".
+    - If epsilon = 0.245, then 24.5% is true local light and 75.5% is scattered/stray light.
     """
+
+    def __init__(self, epsilon: Optional[float] = None, tune_epsilon: bool = True):
+        super().__init__()
+        if epsilon is not None:
+            if tune_epsilon:
+                self.epsilon = nn.Parameter(torch.tensor([epsilon]))
+            else:
+                self.register_buffer("epsilon", torch.tensor([epsilon]))
+        else:
+            self.epsilon = None
+
+        eps_str = f"ε={epsilon:.4f}" if epsilon is not None else "ε=None (using atmosphere ε)"
+        print(f"LegacyActiveOperator initialized | {eps_str} | tune={tune_epsilon}")
+
+    def clamp_parameters(self):
+        if self.epsilon is not None and isinstance(self.epsilon, nn.Parameter):
+            self.epsilon.data.clamp_(0.0, 1.0)
 
     def forward(
         self, stokes: Tuple[torch.Tensor, ...], atmosphere: StereoscopicAtmosphere
     ) -> Tuple[torch.Tensor, ...]:
         I, Q, U, V = stokes
-        epsilon = atmosphere.epsilon
+        epsilon = self.epsilon if self.epsilon is not None else atmosphere.epsilon
 
         # Compute spatial mean (batch/pixels dim is 0)
         I_mean = I.mean(dim=0, keepdim=True)
@@ -48,17 +68,38 @@ class LegacyActiveOperator(DegradationOperator):
 
 class StrayLightOperator(DegradationOperator):
     """
-    Implements a standard stray light correction:
-    out = (1 - cali) * stokes + cali * I_mean
+    Implements a standard stray light correction mixing:
+        out = (1 - epsilon) * stokes + epsilon * <stokes>
 
-    Where I_mean is the spatial average of I (assumed scattered light).
+    Here, `epsilon` acts as the "stray light fraction" (astrophysical standard).
+    - If epsilon = 0.245, then 24.5% is scattered/stray light and 75.5% is true local light.
+    
+    This is mathematically equivalent to LegacyActiveOperator with the mapping
+    epsilon_straylight = 1.0 - epsilon_legacy.
     """
+
+    def __init__(self, epsilon: Optional[float] = None, tune_epsilon: bool = True):
+        super().__init__()
+        if epsilon is not None:
+            if tune_epsilon:
+                self.epsilon = nn.Parameter(torch.tensor([epsilon]))
+            else:
+                self.register_buffer("epsilon", torch.tensor([epsilon]))
+        else:
+            self.epsilon = None
+
+        eps_str = f"ε={epsilon:.4f}" if epsilon is not None else "ε=None (using atmosphere ε)"
+        print(f"StrayLightOperator initialized | {eps_str} | tune={tune_epsilon}")
+
+    def clamp_parameters(self):
+        if self.epsilon is not None and isinstance(self.epsilon, nn.Parameter):
+            self.epsilon.data.clamp_(0.0, 1.0)
 
     def forward(
         self, stokes: Tuple[torch.Tensor, ...], atmosphere: StereoscopicAtmosphere
     ) -> Tuple[torch.Tensor, ...]:
         I, Q, U, V = stokes
-        epsilon = atmosphere.epsilon
+        epsilon = self.epsilon if self.epsilon is not None else atmosphere.epsilon
 
         I_mean = I.mean(dim=0, keepdim=True)
         Q_mean = Q.mean(dim=0, keepdim=True)
@@ -86,6 +127,7 @@ class SpatialPSFOperator(DegradationOperator):
             kernel = kernel.unsqueeze(0).unsqueeze(0)
         self.register_buffer("kernel", kernel)
         self.padding = (kernel.shape[-2] // 2, kernel.shape[-1] // 2)
+        print(f"SpatialPSFOperator initialized | Kernel shape: {tuple(kernel.shape[-2:])}")
 
     def forward(
         self, stokes: Tuple[torch.Tensor, ...], atmosphere: StereoscopicAtmosphere
@@ -114,6 +156,7 @@ class SpectralPSFOperator(DegradationOperator):
             kernel = kernel.unsqueeze(0).unsqueeze(0)
         self.register_buffer("kernel", kernel)
         self.padding = kernel.shape[-1] // 2
+        print(f"SpectralPSFOperator initialized | Kernel length: {kernel.shape[-1]}")
 
     def forward(
         self, stokes: Tuple[torch.Tensor, ...], atmosphere: StereoscopicAtmosphere
@@ -137,6 +180,7 @@ class WarpOperator(DegradationOperator):
         super().__init__()
         self.register_buffer("src_pts", src_pts)
         self.register_buffer("dst_pts", dst_pts)
+        print(f"WarpOperator initialized | Control points: {src_pts.shape[0]}")
 
     def forward(
         self, stokes: Tuple[torch.Tensor, ...], atmosphere: StereoscopicAtmosphere

@@ -74,6 +74,8 @@ class NFAtmosphere(Atmosphere):
             tune_beta=tune_beta
         ).to(self.device)
 
+        print(f"NFAtmosphere initialized | Grid: {self.grid_shape} | Masked: {self.is_masked} | Blocks: {num_resnet_blocks}, Hidden: {dim_hidden}")
+
     def _expand(self, tensor: torch.Tensor) -> torch.Tensor:
         """
         Reshape a flat parameter tensor to self.grid_shape if not masked.

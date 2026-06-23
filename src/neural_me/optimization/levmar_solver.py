@@ -87,6 +87,18 @@ class LevMarSolver:
         self.n_pixels = problem.obs.n_pixels
         self.grid_shape = problem.obs.grid_shape
 
+        # Print High-Level Optimization Setup Summary
+        print("\n" + "=" * 60)
+        print("LEVENBERG-MARQUARDT SOLVER INITIALIZATION SUMMARY")
+        print("=" * 60)
+        atm_type = type(self.atmosphere).__name__
+        print(f"Atmosphere Model   : {atm_type} (Grid Shape: {self.grid_shape})")
+        print(f"MEProblem:")
+        print(f"  Line ID          : {self.problem.nlinea}")
+        print(f"  Wavelengths      : {len(self.problem.obs.wavelengths)} points")
+        print(f"  Data Shape       : {self.problem.obs.data.shape}")
+        print("=" * 60 + "\n")
+
         # Observed data: (n_pixels, 4 * n_wav)
         # NOTE: Use ALL wavelengths for forward model (like MEProblem does),
         # then apply mask to both observed and synthetic data

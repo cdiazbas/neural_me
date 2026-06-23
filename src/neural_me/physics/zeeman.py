@@ -153,20 +153,21 @@ def paramLine(nlinea):
     ju, lu, su, jl, ll, sl, elem, l0, datos = extrae(lineas_path, lineaToFind)
     [dpi, dsr, dsb], [spi, ssr, ssb] = pattern(ju, lu, su, jl, ll, sl)
 
-    # Some useful information
-    print("----------------------------------------------------")
-    print("Element = {0}".format(elem))
-    print("lambda0 = {0}".format(l0))
-    print("ju={0}, lu={1}, su={2}".format(ju, lu, su))
-    print("jl={0}, ll={1}, sl={2}".format(jl, ll, sl))
-
     # g(j,l,s); # geff(ju,gu,jl,gl)
     gu = g(ju, lu, su)
     gl = g(jl, ll, sl)
     gef = geff(ju, gu, jl, gl)
-    print("g_u  = {0:2.2f}".format(gu))
-    print("g_l  = {0:2.2f}".format(gl))
-    print("geff = {0:2.2f}".format(gef))
+
+    # Some useful information
+    print("┌────────────────────────────────────────────────────────────┐")
+    print(f"│ SPECTRAL LINE PROFILE DETAILS (Line {lineaToFind:2d})                     │")
+    print("├────────────────────────────────────────────────────────────┤")
+    print(f"│  Element     : {elem:<43} │")
+    print(f"│  λ₀ (lambda) : {l0:<43.4f} │")
+    print(f"│  Upper state : j={ju:<4.1f} l={lu:<4d} s={su:<4.1f} g_u={gu:<18.2f} │")
+    print(f"│  Lower state : j={jl:<4.1f} l={ll:<4d} s={sl:<4.1f} g_l={gl:<18.2f} │")
+    print(f"│  Effective g : {gef:<43.2f} │")
+    print("└────────────────────────────────────────────────────────────┘")
 
     # Normalization:
     spi /= sum(spi)

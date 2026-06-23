@@ -62,6 +62,7 @@ class CartesianAtmosphere(Atmosphere):
 
         # Allocate Parameters
         self._init_params(init_type)
+        print(f"CartesianAtmosphere initialized | Grid: {self.grid_shape} | Masked: {self.is_masked}")
 
     def _init_params(self, init_type: str):
         """

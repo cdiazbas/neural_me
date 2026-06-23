@@ -70,6 +70,18 @@ class PixelSolver:
                 grid_shape=self.grid_shape, device=self.device
             )
 
+        # Print High-Level Optimization Setup Summary
+        print("\n" + "=" * 60)
+        print("PIXEL SOLVER INITIALIZATION SUMMARY")
+        print("=" * 60)
+        atm_type = type(self.atmosphere).__name__
+        print(f"Atmosphere Model   : {atm_type} (Grid Shape: {self.grid_shape})")
+        print(f"MEProblem:")
+        print(f"  Line ID          : {self.problem.nlinea}")
+        print(f"  Wavelengths      : {len(self.problem.obs.wavelengths)} points")
+        print(f"  Data Shape       : {self.problem.obs.data.shape}")
+        print("=" * 60 + "\n")
+
     def set_from_wfa(
         self,
         Blos: np.ndarray,

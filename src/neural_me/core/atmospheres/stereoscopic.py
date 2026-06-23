@@ -38,6 +38,8 @@ class StereoscopicAtmosphere(nn.Module):
         gamma: float = 101.0,
         beta: float = 0.0,
         delta: float = 90.0,
+        epsilon: Optional[float] = None,
+        tune_epsilon: bool = True,
         device: Optional[torch.device] = None,
     ):
         """
@@ -191,9 +193,12 @@ class StereoscopicAtmosphere(nn.Module):
         )
 
         # --- 4. Calibration ---
+        initial_eps = epsilon if epsilon is not None else self._defaults["epsilon"]
         self.epsilon = nn.Parameter(
-            torch.tensor([self._defaults["epsilon"]], device=self.device)
+            torch.tensor([initial_eps], device=self.device)
         )
+        self.epsilon.requires_grad = tune_epsilon
+        print(f"StereoscopicAtmosphere initialized | Grid: {self.grid_shape} | γ={gamma:.1f}°, β={beta:.1f}°, δ={delta:.1f}°")
 
     @property
     def normalization(self):
@@ -411,9 +416,11 @@ class StereoscopicAtmosphere(nn.Module):
         """
         Returns an Atmosphere object for the specified instrument.
 
-        Index 0: Reference View (Global Frame).
-        Index 1: Secondary View (Rotated Frame).
+        Index 1: Reference View (Global Frame).
+        Index 2: Secondary View (Rotated Frame).
         """
+        if instrument_index not in (1, 2):
+            raise ValueError("instrument_index must be 1 or 2")
         return ViewAtmosphere(self, instrument_index)
 
     def set_global_B(self, Blos: np.ndarray, Bn: np.ndarray, Bw: np.ndarray):
@@ -429,8 +436,8 @@ class StereoscopicAtmosphere(nn.Module):
         Shape: (..., 15)
         Order: [global_Blos, global_Bn, global_Bw, thermo1_vlos, ..., thermo1_S1, thermo2_vlos, ..., thermo2_S1]
         """
-        thermo1 = self.get_atmosphere(0)
-        thermo2 = self.get_atmosphere(1)
+        thermo1 = self.get_atmosphere(1)
+        thermo2 = self.get_atmosphere(2)
         return torch.stack(
             [
                 self.global_Blos,
@@ -480,7 +487,7 @@ class ViewAtmosphere(Atmosphere):
         Bn = self.parent.global_Bn
         Bw = self.parent.global_Bw
 
-        if self.index == 0:
+        if self.index == 1:
             # Identity transformation
             B2 = Blos**2 + Bn**2 + Bw**2 + 1e-8
             Btot = torch.sqrt(B2)
@@ -489,7 +496,7 @@ class ViewAtmosphere(Atmosphere):
             azi = torch.atan2(Bn, Bw)
             return Btot, inc, azi
 
-        elif self.index == 1:
+        elif self.index == 2:
             # Rotated transformation
             gamma = self.parent.gamma_rad
             beta = self.parent.beta_rad
@@ -538,14 +545,14 @@ class ViewAtmosphere(Atmosphere):
     @property
     def vlos(self):
         # No constraint
-        raw = self.parent.thermo1_vlos if self.index == 0 else self.parent.thermo2_vlos
+        raw = self.parent.thermo1_vlos if self.index == 1 else self.parent.thermo2_vlos
         return raw * self.parent.normalization["vlos"]
 
     @property
     def eta0(self):
         raw = (
             self.parent.thermo1_eta0_raw
-            if self.index == 0
+            if self.index == 1
             else self.parent.thermo2_eta0_raw
         )
         return F.softplus(raw) * self.parent.normalization["eta0"]
@@ -553,7 +560,7 @@ class ViewAtmosphere(Atmosphere):
     @property
     def a(self):
         raw = (
-            self.parent.thermo1_a_raw if self.index == 0 else self.parent.thermo2_a_raw
+            self.parent.thermo1_a_raw if self.index == 1 else self.parent.thermo2_a_raw
         )
         return F.softplus(raw) * self.parent.normalization["a"]
 
@@ -561,7 +568,7 @@ class ViewAtmosphere(Atmosphere):
     def ddop(self):
         raw = (
             self.parent.thermo1_ddop_raw
-            if self.index == 0
+            if self.index == 1
             else self.parent.thermo2_ddop_raw
         )
         return F.softplus(raw) * self.parent.normalization["ddop"]
@@ -570,7 +577,7 @@ class ViewAtmosphere(Atmosphere):
     def S0(self):
         raw = (
             self.parent.thermo1_S0_raw
-            if self.index == 0
+            if self.index == 1
             else self.parent.thermo2_S0_raw
         )
         return F.softplus(raw) * self.parent.normalization["S0"]
@@ -579,7 +586,7 @@ class ViewAtmosphere(Atmosphere):
     def S1(self):
         raw = (
             self.parent.thermo1_S1_raw
-            if self.index == 0
+            if self.index == 1
             else self.parent.thermo2_S1_raw
         )
         return F.softplus(raw) * self.parent.normalization["S1"]

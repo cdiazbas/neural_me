@@ -42,6 +42,8 @@ class StereoscopicNFAtmosphere(nn.Module):
         m_freqs: int = 512,
         sigma: Union[float, List[float], List[List[float]]] = 100.0,
         tune_beta: bool = False,
+        epsilon: Optional[float] = None,
+        tune_epsilon: bool = True,
     ):
         super().__init__()
         self.grid_shape = grid_shape
@@ -65,9 +67,11 @@ class StereoscopicNFAtmosphere(nn.Module):
         self._defaults = self.DEFAULT_PARAMETERS.copy()
 
         # Define calibration parameter
+        initial_eps = epsilon if epsilon is not None else self._defaults["epsilon"]
         self.epsilon = nn.Parameter(
-            torch.tensor([self._defaults["epsilon"]], device=self.device)
+            torch.tensor([initial_eps], device=self.device)
         )
+        self.epsilon.requires_grad = tune_epsilon
 
         # Generate coordinates
         self.n_elements = int(np.prod(grid_shape))
@@ -88,6 +92,8 @@ class StereoscopicNFAtmosphere(nn.Module):
             tune_beta=tune_beta
         ).to(self.device)
 
+        print(f"StereoscopicNFAtmosphere initialized | Grid: {self.grid_shape} | γ={gamma:.1f}°, β={beta:.1f}°, δ={delta:.1f}° | Blocks: {num_resnet_blocks}, Hidden: {dim_hidden}")
+
     @property
     def normalization(self):
         return self._normalization
@@ -107,7 +113,7 @@ class StereoscopicNFAtmosphere(nn.Module):
         Bw   = 5.0 * out[:, 2] * self._normalization["global_Bw"]
 
         # Magnetic view transformation
-        if index == 0:
+        if index == 1:
             B2 = Blos**2 + Bn**2 + Bw**2 + 1e-8
             Btot = torch.sqrt(B2)
             inc = torch.acos(torch.clamp(Blos / Btot, -1.0 + 1e-6, 1.0 - 1e-6))
@@ -134,8 +140,8 @@ class StereoscopicNFAtmosphere(nn.Module):
             azi = torch.atan2(Bn_new, Bw_new) + self.delta_rad
 
         # 2. Thermodynamics
-        offset = 3 if index == 0 else 8
-        prefix = f"thermo{1 if index == 0 else 2}_"
+        offset = 3 if index == 1 else 8
+        prefix = f"thermo{1 if index == 1 else 2}_"
         
         vlos = 10.0 * torch.tanh(out[:, offset]) * (self._normalization[prefix + "vlos"] / 2.0)
         eta0 = torch.sigmoid(out[:, offset + 1]) * self._normalization[prefix + "eta0"]
@@ -158,8 +164,10 @@ class StereoscopicNFAtmosphere(nn.Module):
 
     def get_atmosphere(self, instrument_index: int) -> "NFViewAtmosphere":
         """
-        Returns an Atmosphere view for the specified instrument index (0 or 1).
+        Returns an Atmosphere view for the specified instrument index (1 or 2).
         """
+        if instrument_index not in (1, 2):
+            raise ValueError("instrument_index must be 1 or 2")
         return NFViewAtmosphere(self, instrument_index)
 
     def clamp_parameters(self):
@@ -179,8 +187,8 @@ class StereoscopicNFAtmosphere(nn.Module):
         Bn   = self._expand(5.0 * out[:, 1] * self._normalization["global_Bn"])
         Bw   = self._expand(5.0 * out[:, 2] * self._normalization["global_Bw"])
         
-        thermo1 = self.get_atmosphere(0)
-        thermo2 = self.get_atmosphere(1)
+        thermo1 = self.get_atmosphere(1)
+        thermo2 = self.get_atmosphere(2)
         
         return torch.stack(
             [

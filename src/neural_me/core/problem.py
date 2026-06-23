@@ -59,7 +59,7 @@ class MEProblem:
         if line not in known_ids:
             # Treat as wavelength — find nearest line
             line_info = get_line_by_wavelength(line)
-            print(f"MEProblem: wavelength {line} → Line ID={line_info.line_id} ({line_info.element} {line_info.cw:.3f} Å)")
+            print(f"MEProblem: Wavelength {line} Å → Resolved Line ID {line_info.line_id} ({line_info.element} {line_info.cw:.3f} Å)")
             nlinea = line_info.line_id
         else:
             nlinea = line

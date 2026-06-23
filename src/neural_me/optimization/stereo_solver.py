@@ -9,7 +9,7 @@ the second instrument.
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Union
 
 from ..core.atmospheres.stereoscopic import StereoscopicAtmosphere
 from ..core import MEProblem
@@ -52,12 +52,67 @@ class StereoSolver:
 
         self.optimizer = torch.optim.Adam(params, lr=lr)
 
-    def solve(self, n_iterations: int = 1000, verbose: bool = True, normalize_gradients: bool = False) -> List[float]:
+        # Print High-Level Optimization Setup Summary
+        lines = []
+        lines.append("┌────────────────────────────────────────────────────────────┐")
+        lines.append("│         STEREOSCOPIC SOLVER INITIALIZATION SUMMARY         │")
+        lines.append("├────────────────────────────────────────────────────────────┤")
+        atm_type = type(self.atmosphere).__name__
+        lines.append(f"│  Atmosphere Model   : {atm_type:<36} │")
+        lines.append(f"│  Grid Shape         : {str(self.atmosphere.grid_shape):<36} │")
+        lines.append(f"│  Loss Weight (alpha): {self.alpha:<36.3f} │")
+        lines.append(f"│    - Telescope 1    : {1.0 - self.alpha:<36.3f} │")
+        lines.append(f"│    - Telescope 2    : {self.alpha:<36.3f} │")
+        lines.append(f"│  Learning Rate      : {lr:<36} │")
+        
+        for inst_idx, prob, name in [(1, self.problem1, "Telescope 1 (Reference View)"), 
+                                     (2, self.problem2, "Telescope 2 (Secondary View)")]:
+            lines.append("├────────────────────────────────────────────────────────────┤")
+            lines.append(f"│  {name:<56} │")
+            lines.append(f"│    - Line ID        : {prob.nlinea:<34} │")
+            lines.append(f"│    - Wavelengths    : {len(prob.obs.wavelengths):<34d} │")
+            data_shape_str = str(list(prob.obs.data.shape))
+            lines.append(f"│    - Data Shape     : {data_shape_str:<34} │")
+            op = self.degradation_operators.get(inst_idx)
+            if op is not None:
+                op_name = type(op).__name__
+                # Check if operator has local epsilon
+                if getattr(op, "epsilon", None) is not None:
+                    eps_val = op.epsilon.item()
+                    is_learnable = isinstance(op.epsilon, nn.Parameter) and op.epsilon.requires_grad
+                    learn_str = "learnable" if is_learnable else "fixed"
+                    lines.append(f"│    - Degradation    : {op_name:<34} │")
+                    lines.append(f"│                       ({learn_str} ε = {eps_val:.4f})              │")
+                else:
+                    # Check if atmosphere has epsilon
+                    eps_val = getattr(self.atmosphere, "epsilon", None)
+                    if eps_val is not None:
+                        eps_val = eps_val.item()
+                        is_learnable = self.atmosphere.epsilon.requires_grad
+                        learn_str = "learnable" if is_learnable else "fixed"
+                        lines.append(f"│    - Degradation    : {op_name:<34} │")
+                        lines.append(f"│                       ({learn_str} atmos ε = {eps_val:.4f})        │")
+                    else:
+                        lines.append(f"│    - Degradation    : {op_name:<34} │")
+            else:
+                lines.append(f"│    - Degradation    : {'None (Ideal observations)':<34} │")
+        lines.append("└────────────────────────────────────────────────────────────┘")
+        print("\n" + "\n".join(lines) + "\n")
+
+    def solve(
+        self,
+        n_iterations: int = 1000,
+        verbose: bool = True,
+        normalize_gradients: bool = False,
+        return_breakdown: bool = False,
+    ) -> Union[List[float], Tuple[List[float], List[float], List[float]]]:
         """
         Runs the optimization loop.
         """
         self.atmosphere.train()
         losses = []
+        losses1 = []
+        losses2 = []
 
         iterator = range(n_iterations)
         if verbose:
@@ -67,18 +122,18 @@ class StereoSolver:
             self.optimizer.zero_grad()
 
             # 1. Get Views
-            atm1 = self.atmosphere.get_atmosphere(0)
-            atm2 = self.atmosphere.get_atmosphere(1)
+            atm1 = self.atmosphere.get_atmosphere(1)
+            atm2 = self.atmosphere.get_atmosphere(2)
 
             # 2. Forward Pass (Compute Spectra)
             syn1 = self.problem1.compute_forward_model(atm1)
             syn2 = self.problem2.compute_forward_model(atm2)
 
             # 3. Apply Degradation (Stray Light / Calibration)
-            if 0 in self.degradation_operators:
-                syn1 = self.degradation_operators[0](syn1, self.atmosphere)
             if 1 in self.degradation_operators:
-                syn2 = self.degradation_operators[1](syn2, self.atmosphere)
+                syn1 = self.degradation_operators[1](syn1, self.atmosphere)
+            if 2 in self.degradation_operators:
+                syn2 = self.degradation_operators[2](syn2, self.atmosphere)
 
             # 4. Compute Loss
             loss1 = self.problem1.compute_loss_from_syn(syn1)
@@ -101,8 +156,13 @@ class StereoSolver:
             # 6. Clamp Parameters (CRITICAL for Legacy Reproduction)
             if hasattr(self.atmosphere, "clamp_parameters"):
                 self.atmosphere.clamp_parameters()
+            for op in self.degradation_operators.values():
+                if hasattr(op, "clamp_parameters"):
+                    op.clamp_parameters()
 
             losses.append(loss.item())
+            losses1.append(loss1.item())
+            losses2.append(loss2.item())
 
             if verbose and isinstance(iterator, tqdm):
                 iterator.set_postfix(
@@ -113,4 +173,6 @@ class StereoSolver:
                     }
                 )
 
+        if return_breakdown:
+            return losses, losses1, losses2
         return losses

@@ -64,6 +64,7 @@ class SphericalSoftplusAtmosphere(Atmosphere):
 
         # Initialize
         self._init_parameters(initial_values)
+        print(f"SphericalSoftplusAtmosphere initialized | Grid: {self.grid_shape}")
 
     def _create_parameter(self, value: float, requires_grad: bool) -> nn.Parameter:
         # Create tensor of shape grid_shape
