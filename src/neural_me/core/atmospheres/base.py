@@ -76,6 +76,45 @@ DEFAULT_CLAMP_BOUNDS = {
 }
 
 
+def _expand_stereo_thermo_dict(source: Dict[str, Any]) -> Dict[str, Any]:
+    """Duplicate shared thermodynamic values for the two stereoscopic views."""
+    return {
+        f"thermo{idx}_{name}": source[name]
+        for idx in (1, 2)
+        for name in ("vlos", "eta0", "a", "ddop", "S0", "S1")
+    }
+
+
+DEFAULT_STEREO_NORMALIZATION = {
+    **DEFAULT_NORMALIZATION,
+    "Bn": DEFAULT_NORMALIZATION["Blos"],
+    "Bw": DEFAULT_NORMALIZATION["Blos"],
+    "global_Blos": DEFAULT_NORMALIZATION["Blos"],
+    "global_Bn": DEFAULT_NORMALIZATION["Blos"],
+    "global_Bw": DEFAULT_NORMALIZATION["Blos"],
+    **_expand_stereo_thermo_dict(DEFAULT_NORMALIZATION),
+    "epsilon": 1.0,
+}
+
+
+DEFAULT_STEREO_PARAMETERS = {
+    "global_Blos": 100.0,
+    "global_Bn": 100.0,
+    "global_Bw": 100.0,
+    **_expand_stereo_thermo_dict(DEFAULT_PARAMETERS),
+    "epsilon": 0.245,
+}
+
+
+DEFAULT_STEREO_CLAMP_BOUNDS = {
+    "global_Blos": DEFAULT_CLAMP_BOUNDS["Blos"],
+    "global_Bn": DEFAULT_CLAMP_BOUNDS["Blos"],
+    "global_Bw": DEFAULT_CLAMP_BOUNDS["Blos"],
+    **_expand_stereo_thermo_dict(DEFAULT_CLAMP_BOUNDS),
+    "epsilon": (0.0, 1.0),
+}
+
+
 class Atmosphere(nn.Module, ABC):
     """
     Abstract base class for all Atmosphere models.
@@ -92,6 +131,9 @@ class Atmosphere(nn.Module, ABC):
     DEFAULT_NORMALIZATION = DEFAULT_NORMALIZATION
     DEFAULT_PARAMETERS    = DEFAULT_PARAMETERS
     DEFAULT_CLAMP_BOUNDS  = DEFAULT_CLAMP_BOUNDS
+    DEFAULT_STEREO_NORMALIZATION = DEFAULT_STEREO_NORMALIZATION
+    DEFAULT_STEREO_PARAMETERS    = DEFAULT_STEREO_PARAMETERS
+    DEFAULT_STEREO_CLAMP_BOUNDS  = DEFAULT_STEREO_CLAMP_BOUNDS
 
     def __init__(self):
         super().__init__()

@@ -30,7 +30,7 @@ class LegacyActiveOperator(DegradationOperator):
         self, stokes: Tuple[torch.Tensor, ...], atmosphere: StereoscopicAtmosphere
     ) -> Tuple[torch.Tensor, ...]:
         I, Q, U, V = stokes
-        cali = atmosphere.cali
+        epsilon = atmosphere.epsilon
 
         # Compute spatial mean (batch/pixels dim is 0)
         I_mean = I.mean(dim=0, keepdim=True)
@@ -38,10 +38,10 @@ class LegacyActiveOperator(DegradationOperator):
         U_mean = U.mean(dim=0, keepdim=True)
         V_mean = V.mean(dim=0, keepdim=True)
 
-        I_new = cali * I + (1.0 - cali) * I_mean
-        Q_new = cali * Q + (1.0 - cali) * Q_mean
-        U_new = cali * U + (1.0 - cali) * U_mean
-        V_new = cali * V + (1.0 - cali) * V_mean
+        I_new = epsilon * I + (1.0 - epsilon) * I_mean
+        Q_new = epsilon * Q + (1.0 - epsilon) * Q_mean
+        U_new = epsilon * U + (1.0 - epsilon) * U_mean
+        V_new = epsilon * V + (1.0 - epsilon) * V_mean
 
         return I_new, Q_new, U_new, V_new
 
@@ -58,17 +58,17 @@ class StrayLightOperator(DegradationOperator):
         self, stokes: Tuple[torch.Tensor, ...], atmosphere: StereoscopicAtmosphere
     ) -> Tuple[torch.Tensor, ...]:
         I, Q, U, V = stokes
-        cali = atmosphere.cali
+        epsilon = atmosphere.epsilon
 
         I_mean = I.mean(dim=0, keepdim=True)
         Q_mean = Q.mean(dim=0, keepdim=True)
         U_mean = U.mean(dim=0, keepdim=True)
         V_mean = V.mean(dim=0, keepdim=True)
 
-        I_new = (1.0 - cali) * I + cali * I_mean
-        Q_new = (1.0 - cali) * Q + cali * Q_mean
-        U_new = (1.0 - cali) * U + cali * U_mean
-        V_new = (1.0 - cali) * V + cali * V_mean
+        I_new = (1.0 - epsilon) * I + epsilon * I_mean
+        Q_new = (1.0 - epsilon) * Q + epsilon * Q_mean
+        U_new = (1.0 - epsilon) * U + epsilon * U_mean
+        V_new = (1.0 - epsilon) * V + epsilon * V_mean
 
         return I_new, Q_new, U_new, V_new
 

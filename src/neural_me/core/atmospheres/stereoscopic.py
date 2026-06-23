@@ -14,8 +14,7 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Tuple, Optional, Any, Dict
 
-import math
-from .base import Atmosphere, DEFAULT_CLAMP_BOUNDS
+from .base import Atmosphere
 
 
 class StereoscopicAtmosphere(nn.Module):
@@ -29,104 +28,172 @@ class StereoscopicAtmosphere(nn.Module):
     4. Calibration: cali (1+)
     """
 
+    DEFAULT_NORMALIZATION = Atmosphere.DEFAULT_STEREO_NORMALIZATION
+    DEFAULT_PARAMETERS = Atmosphere.DEFAULT_STEREO_PARAMETERS
+    DEFAULT_CLAMP_BOUNDS = Atmosphere.DEFAULT_STEREO_CLAMP_BOUNDS
+
     def __init__(
         self,
         grid_shape: Tuple[int, ...],
         gamma: float = 101.0,
-        alpha: float = 0.0,
-        rotangle: float = 90.0,
+        beta: float = 0.0,
+        delta: float = 90.0,
         device: Optional[torch.device] = None,
     ):
         """
         Args:
             grid_shape: (ny, nx)
             gamma: Longitudinal separation angle in DEGREES.
-            alpha: Elevation tilt angle in DEGREES.
-            rotangle: Azimuth rotation in DEGREES.
+            beta: Elevation tilt angle in DEGREES.
+            delta: Azimuth rotation in DEGREES.
             device: Torch device.
         """
         super().__init__()
         self.grid_shape = grid_shape
         self.device = device or torch.device("cpu")
+        self._normalization = self.DEFAULT_NORMALIZATION.copy()
+        self._defaults = self.DEFAULT_PARAMETERS.copy()
 
         # Geometry constants
         self.gamma_rad = torch.tensor(
             np.radians(gamma), device=self.device, dtype=torch.float32
         )
-        self.alpha_rad = torch.tensor(
-            np.radians(alpha), device=self.device, dtype=torch.float32
+        self.beta_rad = torch.tensor(
+            np.radians(beta), device=self.device, dtype=torch.float32
         )
-        self.rotangle_rad = torch.tensor(
-            np.radians(rotangle), device=self.device, dtype=torch.float32
+        self.delta_rad = torch.tensor(
+            np.radians(delta), device=self.device, dtype=torch.float32
         )
 
         # --- 1. Global Magnetic Field (Cartesian) ---
         # Initialized with noise to avoid 0-gradient singularity
+        global_noise_std = 10.0
         self.global_Blos = nn.Parameter(
-            torch.randn(grid_shape, device=self.device) * 10.0 + 100.0
+            torch.randn(grid_shape, device=self.device) * global_noise_std
+            + self._defaults["global_Blos"]
         )
         self.global_Bn = nn.Parameter(
-            torch.randn(grid_shape, device=self.device) * 10.0 + 100.0
+            torch.randn(grid_shape, device=self.device) * global_noise_std
+            + self._defaults["global_Bn"]
         )
         self.global_Bw = nn.Parameter(
-            torch.randn(grid_shape, device=self.device) * 10.0 + 100.0
+            torch.randn(grid_shape, device=self.device) * global_noise_std
+            + self._defaults["global_Bw"]
         )
 
         # --- 2. Instrument 1 Thermodynamics (Hinode) ---
         # Stored as RAW parameters (pre-activation)
-        self.thermo1_vlos = nn.Parameter(torch.zeros(grid_shape, device=self.device))
+        self.thermo1_vlos = nn.Parameter(
+            torch.full(
+                grid_shape,
+                self._defaults["thermo1_vlos"] / self._normalization["vlos"],
+                device=self.device,
+            )
+        )
         self.thermo1_eta0_raw = nn.Parameter(
-            torch.zeros(grid_shape, device=self.device) + 1.0
-        )  # Init > 0 for log
+            torch.full(
+                grid_shape,
+                self._inverse_softplus(
+                    self._defaults["thermo1_eta0"] / self._normalization["eta0"]
+                ),
+                device=self.device,
+            )
+        )
         self.thermo1_a_raw = nn.Parameter(
-            torch.zeros(grid_shape, device=self.device) - 2.0
-        )  # Small init
+            torch.full(
+                grid_shape,
+                self._inverse_softplus(
+                    self._defaults["thermo1_a"] / self._normalization["a"]
+                ),
+                device=self.device,
+            )
+        )
         self.thermo1_ddop_raw = nn.Parameter(
-            torch.zeros(grid_shape, device=self.device) - 2.0
+            torch.full(
+                grid_shape,
+                self._inverse_softplus(
+                    self._defaults["thermo1_ddop"] / self._normalization["ddop"]
+                ),
+                device=self.device,
+            )
         )
         self.thermo1_S0_raw = nn.Parameter(
-            torch.zeros(grid_shape, device=self.device) + 1.0
+            torch.full(
+                grid_shape,
+                self._inverse_softplus(
+                    self._defaults["thermo1_S0"] / self._normalization["S0"]
+                ),
+                device=self.device,
+            )
         )
         self.thermo1_S1_raw = nn.Parameter(
-            torch.zeros(grid_shape, device=self.device) + 1.0
+            torch.full(
+                grid_shape,
+                self._inverse_softplus(
+                    self._defaults["thermo1_S1"] / self._normalization["S1"]
+                ),
+                device=self.device,
+            )
         )
 
         # --- 3. Instrument 2 Thermodynamics (SolO) ---
-        self.thermo2_vlos = nn.Parameter(torch.zeros(grid_shape, device=self.device))
+        self.thermo2_vlos = nn.Parameter(
+            torch.full(
+                grid_shape,
+                self._defaults["thermo2_vlos"] / self._normalization["vlos"],
+                device=self.device,
+            )
+        )
         self.thermo2_eta0_raw = nn.Parameter(
-            torch.zeros(grid_shape, device=self.device) + 1.0
+            torch.full(
+                grid_shape,
+                self._inverse_softplus(
+                    self._defaults["thermo2_eta0"] / self._normalization["eta0"]
+                ),
+                device=self.device,
+            )
         )
         self.thermo2_a_raw = nn.Parameter(
-            torch.zeros(grid_shape, device=self.device) - 2.0
+            torch.full(
+                grid_shape,
+                self._inverse_softplus(
+                    self._defaults["thermo2_a"] / self._normalization["a"]
+                ),
+                device=self.device,
+            )
         )
         self.thermo2_ddop_raw = nn.Parameter(
-            torch.zeros(grid_shape, device=self.device) - 2.0
+            torch.full(
+                grid_shape,
+                self._inverse_softplus(
+                    self._defaults["thermo2_ddop"] / self._normalization["ddop"]
+                ),
+                device=self.device,
+            )
         )
         self.thermo2_S0_raw = nn.Parameter(
-            torch.zeros(grid_shape, device=self.device) + 1.0
+            torch.full(
+                grid_shape,
+                self._inverse_softplus(
+                    self._defaults["thermo2_S0"] / self._normalization["S0"]
+                ),
+                device=self.device,
+            )
         )
         self.thermo2_S1_raw = nn.Parameter(
-            torch.zeros(grid_shape, device=self.device) + 1.0
+            torch.full(
+                grid_shape,
+                self._inverse_softplus(
+                    self._defaults["thermo2_S1"] / self._normalization["S1"]
+                ),
+                device=self.device,
+            )
         )
 
         # --- 4. Calibration ---
-        self.cali = nn.Parameter(torch.tensor([0.245], device=self.device))
-
-        # --- Normalization Constants (Legacy Match) ---
-        self._normalization = {
-            "B": 500.0,
-            "Blos": 500.0,
-            "Bn": 500.0,
-            "Bw": 500.0,
-            "vlos": 2.0,
-            "eta0": 100.0,
-            "a": 0.2,
-            "ddop": 1.0,
-            "S0": 1.0,
-            "S1": 1.0,
-            "gamma": 1.0,
-            "xi": 1.0,  # Angles not normalized usually but kept for consistency
-        }
+        self.epsilon = nn.Parameter(
+            torch.tensor([self._defaults["epsilon"]], device=self.device)
+        )
 
     @property
     def normalization(self):
@@ -139,15 +206,14 @@ class StereoscopicAtmosphere(nn.Module):
     @staticmethod
     def _inv_softplus_scalar(x: float, eps: float = 1e-7) -> float:
         """Numerically stable inverse softplus for a scalar. See Atmosphere._inv_softplus_scalar."""
-        x = max(x, eps)
-        return x + math.log(-math.expm1(-x))
+        return Atmosphere._inv_softplus_scalar(x, eps)
 
     def _clamp_bounds(self, name: str, norm: float = 1.0):
         """Return (lo, hi) clamp bounds in *normalized* space for parameter *name*.
 
         Delegates to :data:`DEFAULT_CLAMP_BOUNDS` from base.
         """
-        lo_phys, hi_phys = DEFAULT_CLAMP_BOUNDS[name]
+        lo_phys, hi_phys = self.DEFAULT_CLAMP_BOUNDS[name]
         if norm == 1.0:
             return lo_phys, hi_phys
         return lo_phys / norm, hi_phys / norm
@@ -159,28 +225,66 @@ class StereoscopicAtmosphere(nn.Module):
         if method == "default":
             # Re-initialize with random noise / default values similar to __init__
             with torch.no_grad():
-                self.global_Blos.normal_(0, 10).add_(100)
-                self.global_Bn.normal_(0, 10).add_(100)
-                self.global_Bw.normal_(0, 10).add_(100)
-                # Reset thermos to default (mostly zero/small for raw)
-                for p in [self.thermo1_vlos, self.thermo2_vlos]:
-                    p.zero_()
-                for p in [self.thermo1_eta0_raw, self.thermo2_eta0_raw]:
-                    p.fill_(1.0)
-                for p in [
-                    self.thermo1_a_raw,
-                    self.thermo2_a_raw,
-                    self.thermo1_ddop_raw,
-                    self.thermo2_ddop_raw,
-                ]:
-                    p.fill_(-2.0)
-                for p in [
-                    self.thermo1_S0_raw,
-                    self.thermo2_S0_raw,
-                    self.thermo1_S1_raw,
-                    self.thermo2_S1_raw,
-                ]:
-                    p.fill_(1.0)
+                self.global_Blos.normal_(0, 10).add_(self._defaults["global_Blos"])
+                self.global_Bn.normal_(0, 10).add_(self._defaults["global_Bn"])
+                self.global_Bw.normal_(0, 10).add_(self._defaults["global_Bw"])
+                self.thermo1_vlos.fill_(
+                    self._defaults["thermo1_vlos"] / self._normalization["vlos"]
+                )
+                self.thermo2_vlos.fill_(
+                    self._defaults["thermo2_vlos"] / self._normalization["vlos"]
+                )
+                self.thermo1_eta0_raw.fill_(
+                    self._inverse_softplus(
+                        self._defaults["thermo1_eta0"] / self._normalization["eta0"]
+                    )
+                )
+                self.thermo2_eta0_raw.fill_(
+                    self._inverse_softplus(
+                        self._defaults["thermo2_eta0"] / self._normalization["eta0"]
+                    )
+                )
+                self.thermo1_a_raw.fill_(
+                    self._inverse_softplus(
+                        self._defaults["thermo1_a"] / self._normalization["a"]
+                    )
+                )
+                self.thermo2_a_raw.fill_(
+                    self._inverse_softplus(
+                        self._defaults["thermo2_a"] / self._normalization["a"]
+                    )
+                )
+                self.thermo1_ddop_raw.fill_(
+                    self._inverse_softplus(
+                        self._defaults["thermo1_ddop"] / self._normalization["ddop"]
+                    )
+                )
+                self.thermo2_ddop_raw.fill_(
+                    self._inverse_softplus(
+                        self._defaults["thermo2_ddop"] / self._normalization["ddop"]
+                    )
+                )
+                self.thermo1_S0_raw.fill_(
+                    self._inverse_softplus(
+                        self._defaults["thermo1_S0"] / self._normalization["S0"]
+                    )
+                )
+                self.thermo2_S0_raw.fill_(
+                    self._inverse_softplus(
+                        self._defaults["thermo2_S0"] / self._normalization["S0"]
+                    )
+                )
+                self.thermo1_S1_raw.fill_(
+                    self._inverse_softplus(
+                        self._defaults["thermo1_S1"] / self._normalization["S1"]
+                    )
+                )
+                self.thermo2_S1_raw.fill_(
+                    self._inverse_softplus(
+                        self._defaults["thermo2_S1"] / self._normalization["S1"]
+                    )
+                )
+                self.epsilon.fill_(self._defaults["epsilon"])
 
     def _inverse_softplus(self, x, epsilon=1e-7):
         """
@@ -242,8 +346,8 @@ class StereoscopicAtmosphere(nn.Module):
         set_param(self.thermo2_S1_raw, params.get("thermo2_S1"), self._normalization["S1"], is_softplus=True)
 
         # 4. Calibration
-        if "cali" in params:
-            self.cali.data.copy_(torch.as_tensor(params["cali"], device=self.device))
+        if "epsilon" in params:
+            self.epsilon.data.copy_(torch.as_tensor(params["epsilon"], device=self.device))
 
     def clamp_parameters(self):
         """
@@ -274,30 +378,33 @@ class StereoscopicAtmosphere(nn.Module):
             """Clamp linearly normalized parameter to physical bounds / norm."""
             lo, hi = self._clamp_bounds(name, norm[name])
             tensor_norm.data.clamp_(lo, hi)
-
         # --- Thermodynamic softplus parameters (Chain B) ---
-        for raw in (self.thermo1_eta0_raw, self.thermo2_eta0_raw):
-            clamp_softplus_upper(raw, "eta0")
-        for raw in (self.thermo1_a_raw, self.thermo2_a_raw):
-            clamp_softplus_upper(raw, "a")
-        for raw in (self.thermo1_ddop_raw, self.thermo2_ddop_raw):
-            clamp_softplus_upper(raw, "ddop")
-        for raw in (self.thermo1_S0_raw, self.thermo2_S0_raw):
-            clamp_softplus_upper(raw, "S0")
-        for raw in (self.thermo1_S1_raw, self.thermo2_S1_raw):
-            clamp_softplus_upper(raw, "S1")
+        clamp_softplus_upper(self.thermo1_eta0_raw, "thermo1_eta0")
+        clamp_softplus_upper(self.thermo2_eta0_raw, "thermo2_eta0")
+        clamp_softplus_upper(self.thermo1_a_raw, "thermo1_a")
+        clamp_softplus_upper(self.thermo2_a_raw, "thermo2_a")
+        clamp_softplus_upper(self.thermo1_ddop_raw, "thermo1_ddop")
+        clamp_softplus_upper(self.thermo2_ddop_raw, "thermo2_ddop")
+        clamp_softplus_upper(self.thermo1_S0_raw, "thermo1_S0")
+        clamp_softplus_upper(self.thermo2_S0_raw, "thermo2_S0")
+        clamp_softplus_upper(self.thermo1_S1_raw, "thermo1_S1")
+        clamp_softplus_upper(self.thermo2_S1_raw, "thermo2_S1")
 
         # --- vlos: linear normalized (Chain A) ---
-        clamp_linear(self.thermo1_vlos, "vlos")
-        clamp_linear(self.thermo2_vlos, "vlos")
-
-        # --- Calibration: physical scalar in [0, 1] ---
-        self.cali.data.clamp_(0.0, 1.0)
+        clamp_linear(self.thermo1_vlos, "thermo1_vlos")
+        clamp_linear(self.thermo2_vlos, "thermo2_vlos")
 
         # --- Global Magnetic Field (Cartesian) ---
-        self.global_Blos.data.clamp_(-3500.0, 3500.0)
-        self.global_Bn.data.clamp_(-3500.0, 3500.0)
-        self.global_Bw.data.clamp_(-3500.0, 3500.0)
+        lo, hi = self._clamp_bounds("global_Blos")
+        self.global_Blos.data.clamp_(lo, hi)
+        lo, hi = self._clamp_bounds("global_Bn")
+        self.global_Bn.data.clamp_(lo, hi)
+        lo, hi = self._clamp_bounds("global_Bw")
+        self.global_Bw.data.clamp_(lo, hi)
+
+        # --- Calibration ---
+        lo, hi = self._clamp_bounds("epsilon")
+        self.epsilon.data.clamp_(lo, hi)
 
 
     def get_atmosphere(self, instrument_index: int) -> "ViewAtmosphere":
@@ -314,6 +421,43 @@ class StereoscopicAtmosphere(nn.Module):
             self.global_Blos.copy_(torch.from_numpy(Blos).to(self.device).float())
             self.global_Bn.copy_(torch.from_numpy(Bn).to(self.device).float())
             self.global_Bw.copy_(torch.from_numpy(Bw).to(self.device).float())
+
+    def to_stack(self) -> torch.Tensor:
+        """
+        Returns the stack of ALL physical parameters in stereoscopic configuration.
+
+        Shape: (..., 15)
+        Order: [global_Blos, global_Bn, global_Bw, thermo1_vlos, ..., thermo1_S1, thermo2_vlos, ..., thermo2_S1]
+        """
+        thermo1 = self.get_atmosphere(0)
+        thermo2 = self.get_atmosphere(1)
+        return torch.stack(
+            [
+                self.global_Blos,
+                self.global_Bn,
+                self.global_Bw,
+                thermo1.vlos,
+                thermo1.eta0,
+                thermo1.a,
+                thermo1.ddop,
+                thermo1.S0,
+                thermo1.S1,
+                thermo2.vlos,
+                thermo2.eta0,
+                thermo2.a,
+                thermo2.ddop,
+                thermo2.S0,
+                thermo2.S1,
+            ],
+            dim=-1,
+        )
+
+    def to_numpy_stack(self) -> np.ndarray:
+        """
+        Returns the stack of physical parameters as a numpy array. Moves to CPU
+        and detaches graph.
+        """
+        return self.to_stack().detach().cpu().numpy()
 
 
 class ViewAtmosphere(Atmosphere):
@@ -348,22 +492,22 @@ class ViewAtmosphere(Atmosphere):
         elif self.index == 1:
             # Rotated transformation
             gamma = self.parent.gamma_rad
-            alpha = self.parent.alpha_rad
-            rot = self.parent.rotangle_rad
+            beta = self.parent.beta_rad
+            delta = self.parent.delta_rad
 
             cos_g = torch.cos(gamma)
             sin_g = torch.sin(gamma)
-            cos_a = torch.cos(alpha)
-            sin_a = torch.sin(alpha)
+            cos_b = torch.cos(beta)
+            sin_b = torch.sin(beta)
 
             # First rotation by longitudinal separation gamma around Bn (North/Y axis):
             Blos_prime = Blos * cos_g + Bw * sin_g
             Bn_prime = Bn
             Bw_prime = -Blos * sin_g + Bw * cos_g
 
-            # Second rotation by elevation tilt alpha around Bw_prime (West/Z axis):
-            Blos_new = Blos_prime * cos_a + Bn_prime * sin_a
-            Bn_new = -Blos_prime * sin_a + Bn_prime * cos_a
+            # Second rotation by elevation tilt beta around Bw_prime (West/Z axis):
+            Blos_new = Blos_prime * cos_b + Bn_prime * sin_b
+            Bn_new = -Blos_prime * sin_b + Bn_prime * cos_b
             Bw_new = Bw_prime
 
             B2 = Blos_new**2 + Bn_new**2 + Bw_new**2 + 1e-8
@@ -371,7 +515,7 @@ class ViewAtmosphere(Atmosphere):
             inc = torch.acos(
                 torch.clamp(Blos_new / Btot, -1.0 + 1e-6, 1.0 - 1e-6)
             )
-            azi = torch.atan2(Bn_new, Bw_new) + rot
+            azi = torch.atan2(Bn_new, Bw_new) + delta
 
             return Btot, inc, azi
 

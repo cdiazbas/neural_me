@@ -13,6 +13,8 @@ from neural_me.core.atmospheres import (
     SphericalAtmosphere,
     SphericalSoftplusAtmosphere,
     StereoscopicAtmosphere,
+    NFAtmosphere,
+    StereoscopicNFAtmosphere,
 )
 from neural_me.core.atmospheres.base import (
     DEFAULT_NORMALIZATION,
@@ -34,6 +36,9 @@ __all__ = [
     "SphericalAtmosphere",
     "SphericalSoftplusAtmosphere",
     "StereoscopicAtmosphere",
+    "NFAtmosphere",
+    "StereoscopicNFAtmosphere",
     "DEFAULT_NORMALIZATION",
     "DEFAULT_PARAMETERS",
 ]
+

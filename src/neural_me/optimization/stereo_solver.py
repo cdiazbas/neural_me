@@ -52,7 +52,7 @@ class StereoSolver:
 
         self.optimizer = torch.optim.Adam(params, lr=lr)
 
-    def solve(self, n_iterations: int = 1000, verbose: bool = True) -> List[float]:
+    def solve(self, n_iterations: int = 1000, verbose: bool = True, normalize_gradients: bool = False) -> List[float]:
         """
         Runs the optimization loop.
         """
@@ -88,6 +88,12 @@ class StereoSolver:
             loss = (1.0 - self.alpha) * loss1 + self.alpha * loss2
 
             loss.backward()
+
+            # Optional Gradient Normalization
+            if normalize_gradients:
+                for param in self.optimizer.param_groups[0]["params"]:
+                    if param.grad is not None:
+                        param.grad /= torch.mean(torch.abs(param.grad), dim=0) + 1e-8
 
             # 5. Optimization Step
             self.optimizer.step()

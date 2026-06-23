@@ -13,6 +13,8 @@ from neural_me.core import (
     CartesianAtmosphere,
     StereoscopicAtmosphere,
     SphericalSoftplusAtmosphere,
+    NFAtmosphere,
+    StereoscopicNFAtmosphere,
 )
 
 # Physics components
@@ -39,6 +41,8 @@ __all__ = [
     "CartesianAtmosphere",
     "StereoscopicAtmosphere",
     "SphericalSoftplusAtmosphere",
+    "NFAtmosphere",
+    "StereoscopicNFAtmosphere",
     # Physics
     "MilneEddington",
     # Optimization

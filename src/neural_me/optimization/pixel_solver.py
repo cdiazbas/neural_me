@@ -187,7 +187,6 @@ class PixelSolver:
 
         optimizer = optimizer_cls(params_to_optimize, lr=lr, **optimizer_kwargs)
         use_lm = False
-
         iterator = trange(n_iterations, leave=True) if verbose else range(n_iterations)
 
         loss_history = []
@@ -202,12 +201,17 @@ class PixelSolver:
             # 2. Backward
             loss.backward()
 
+            # Optional Gradient Normalization
+            if normalize_gradients:
+                for param in params_to_optimize:
+                    if param.grad is not None:
+                        param.grad /= torch.mean(torch.abs(param.grad), dim=0) + 1e-8
+
             # 3. Optimizer step
             if use_lm:
                 optimizer.step(loss=loss.item())
             else:
                 optimizer.step()
-
             # 4. Parameter clamping
             if clamp_parameters:
                 self.atmosphere.clamp_parameters()
