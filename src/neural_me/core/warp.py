@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import kornia
-from kornia.geometry.transform import get_tps_transform, warp_image_tps
+from kornia.geometry.transform import get_tps_transform, warp_image_tps, warp_points_tps
 
 
 # ---------------------------------------------------------------------------
@@ -80,18 +80,258 @@ def get_points_src(npoints: int = 9) -> torch.Tensor:
     return pts[:, :npoints]
 
 
+def plot_grid(
+    pts_src,
+    pts_dst,
+    ax=None,
+    image_shape=None,
+    original_grid: bool = True,
+    warped_grid: bool = True,
+    target_grid: bool | None = None,
+    grid_mode: str = 'control',
+    vis_n: int = 20,
+    src_color: str = 'dodgerblue',
+    dst_color: str = 'tomato',
+    alpha: float = 0.8,
+    linewidth: float = 1.2,
+    markersize: float = 4,
+):
+    """
+    Overlay TPS deformation grids on an existing matplotlib axes.
+
+    By default (``grid_mode='control'``), this draws the *actual control-point
+    lattice* (dot-connected real grid), not a dense synthetic mesh.
+
+    Works with both composition (list) and non-composition (tensor) outputs
+    from :func:`align_images`.
+
+    Args:
+        pts_src:      Source control points – tensor ``(1,N,2)`` or list.
+        pts_dst:      Destination control points – tensor ``(1,N,2)`` or list.
+        ax:           Matplotlib axes to draw on. Defaults to ``plt.gca()``.
+        image_shape:  ``(H, W)`` of the displayed image used to convert from
+                      normalised ``[-1, 1]`` to pixel coordinates.
+                      If ``None``, draws in normalised space.
+        original_grid: Draw the original (un-warped) regular grid.
+        warped_grid:   Draw the warped (deformed) grid.
+        target_grid:   Alias for ``warped_grid``.
+        grid_mode:    ``'control'`` (default) for true control lattice,
+                  ``'dense'`` for a dense ``vis_n × vis_n`` visual mesh.
+        vis_n:        Grid resolution used only when ``grid_mode='dense'``.
+        src_color:    Colour for the original grid. Default ``'dodgerblue'``.
+        dst_color:    Colour for the warped grid. Default ``'tomato'``.
+        alpha:        Line / marker transparency.
+        linewidth:    Grid line width.
+        markersize:   Control-point marker size (0 to hide markers).
+    """
+    import matplotlib.pyplot as plt
+
+    if ax is None:
+        ax = plt.gca()
+
+    if target_grid is not None:
+        warped_grid = target_grid
+
+    # Normalise to lists so composition and non-composition are handled uniformly
+    if isinstance(pts_src, torch.Tensor):
+        srcs = [pts_src]
+        dsts = [pts_dst]
+    else:
+        srcs = list(pts_src)
+        dsts = list(pts_dst)
+
+    # Base grid in normalised space.
+    if grid_mode == 'control':
+        vis_flat = srcs[-1].float().clone()  # (1, N, 2)
+        npts = vis_flat.shape[1]
+        grid_n = int(round(npts ** 0.5))
+        is_square = grid_n * grid_n == npts
+        is_level0 = npts == 5
+
+        if not is_square and not is_level0:
+            # Fallback for uncommon custom control sets.
+            grid_mode = 'dense'
+
+    if grid_mode == 'dense':
+        coords = torch.linspace(-1.0, 1.0, vis_n)
+        gy, gx = torch.meshgrid(coords, coords, indexing='ij')
+        vis_flat = torch.stack([gx.flatten(), gy.flatten()], dim=-1).unsqueeze(0)
+        grid_n = vis_n
+        is_square = True
+        is_level0 = False
+
+    # --- Forward-warp the base grid through all TPS stages --------------------
+    warped_flat = vis_flat.clone()
+    for ps, pd in zip(srcs, dsts):
+        ps = ps.float()
+        pd = pd.float()
+        kw, aw = get_tps_transform(ps, pd)
+        warped_flat = warp_points_tps(warped_flat, pd, kw, aw)
+
+    if is_square:
+        # Reshape to (grid_n, grid_n, 2): index as [row, col, xy]
+        orig_grid = vis_flat.view(grid_n, grid_n, 2).detach().numpy()
+        warped_grid_arr = warped_flat.view(grid_n, grid_n, 2).detach().numpy()
+    else:
+        # Level 0 special case: 4 corners + center
+        orig_grid = vis_flat.squeeze(0).detach().numpy()
+        warped_grid_arr = warped_flat.squeeze(0).detach().numpy()
+
+    # --- Helper: normalised [-1,1] → pixel coordinates -----------------------
+    def _to_px(arr):
+        """arr shape (..., 2) with [..., 0]=x, [..., 1]=y"""
+        if image_shape is None:
+            return arr[..., 0], arr[..., 1]
+        H, W = image_shape
+        px_x = (arr[..., 0] + 1.0) / 2.0 * W
+        px_y = (arr[..., 1] + 1.0) / 2.0 * H
+        return px_x, px_y
+
+    # --- Draw a grid (rows + columns) from a (grid_n, grid_n, 2) array --------
+    def _draw(grid_arr, color):
+        if is_square:
+            xs, ys = _to_px(grid_arr)
+            for r in range(grid_n):
+                ax.plot(xs[r, :], ys[r, :], color=color, alpha=alpha,
+                        linewidth=linewidth)
+            for c in range(grid_n):
+                ax.plot(xs[:, c], ys[:, c], color=color, alpha=alpha,
+                        linewidth=linewidth)
+            if markersize > 0:
+                ax.plot(xs.reshape(-1), ys.reshape(-1), 'o', color=color,
+                        markersize=markersize, alpha=alpha, markeredgewidth=0)
+        else:
+            # Level 0 visualisation (4-corner frame + center spokes)
+            # Point order from get_points_src(5): tl, tr, bl, br, c
+            pts_x, pts_y = _to_px(grid_arr)
+            order = [0, 1, 3, 2, 0]
+            ax.plot(pts_x[order], pts_y[order], color=color, alpha=alpha,
+                    linewidth=linewidth)
+            cx, cy = pts_x[4], pts_y[4]
+            for k in [0, 1, 2, 3]:
+                ax.plot([cx, pts_x[k]], [cy, pts_y[k]], color=color,
+                        alpha=alpha, linewidth=linewidth)
+            if markersize > 0:
+                ax.plot(pts_x, pts_y, 'o', color=color, markersize=markersize,
+                        alpha=alpha, markeredgewidth=0)
+
+    if original_grid:
+        _draw(orig_grid, src_color)
+    if warped_grid:
+        _draw(warped_grid_arr, dst_color)
+
+
+def apply_warp(
+    image,
+    points_src,
+    points_dst,
+    padding: str = 'zeros',
+    fill_gaps_kernel: int = 15,
+    fill_gaps_sigma: float = 5.0,
+) -> torch.Tensor:
+    """
+    Apply a pre-computed TPS warp (from :func:`align_images`) to a new image.
+
+    Works transparently for both composition and non-composition results:
+
+    * **Non-composition** – ``points_src`` / ``points_dst`` are single tensors
+      ``(1, N, 2)``.
+    * **Composition** – ``points_src`` / ``points_dst`` are lists of tensors,
+      one per stage (as returned by ``align_images(..., composition=True)``).
+
+    Args:
+        image:       Image to warp. Accepts np.ndarray or torch.Tensor in any
+                     shape supported by :func:`_prepare_image`.
+        points_src:  Source control points – tensor ``(1, N, 2)`` or list thereof.
+        points_dst:  Destination control points – tensor ``(1, N, 2)`` or list thereof.
+        padding:     Gap-filling strategy applied to the final output:
+                     ``'zeros'`` | ``'border'`` | ``'reflection'`` | ``'filter'``.
+        fill_gaps_kernel: Gaussian kernel size for ``padding='filter'``. Default 15.
+        fill_gaps_sigma:  Gaussian sigma for ``padding='filter'``. Default 5.0.
+
+    Returns:
+        Warped image tensor of shape ``(1, C, H, W)``.
+    """
+    img = _prepare_image(image)
+    _pm = 'zeros' if padding == 'filter' else padding
+
+    # Normalise to lists so the loop below handles both cases identically.
+    if isinstance(points_src, torch.Tensor):
+        srcs = [points_src]
+        dsts = [points_dst]
+    else:
+        srcs = list(points_src)
+        dsts = list(points_dst)
+
+    result = img
+    for i, (ps, pd) in enumerate(zip(srcs, dsts)):
+        is_last = (i == len(srcs) - 1)
+        with torch.no_grad():
+            result = differentiable_tps_warp(
+                result, ps, pd,
+                padding_mode=_pm if is_last else 'zeros',
+            )
+
+    if padding == 'filter':
+        gap_mask = (result == 0).all(dim=1, keepdim=True).float()
+        if gap_mask.any():
+            result = fill_gaps(result, gap_mask,
+                               kernel_size=fill_gaps_kernel,
+                               sigma=fill_gaps_sigma)
+
+    return result
+
+
+def fill_gaps(
+    image: torch.Tensor,
+    mask: torch.Tensor,
+    kernel_size: int = 15,
+    sigma: float = 5.0,
+) -> torch.Tensor:
+    """
+    Fill masked (zero/invalid) regions in *image* using a Gaussian-weighted
+    average of surrounding valid pixels (diffusion-based inpainting).
+
+    Args:
+        image:       (B, C, H, W) tensor, gaps can contain any value.
+        mask:        (B, 1, H, W) or (B, C, H, W) boolean/float mask where
+                     1 (True) marks *invalid* pixels to be filled.
+        kernel_size: Size of the Gaussian blur kernel (odd integer).
+        sigma:       Standard deviation of the Gaussian kernel.
+
+    Returns:
+        Inpainted tensor of the same shape as *image*.
+    """
+    from kornia.filters import gaussian_blur2d
+
+    valid = 1.0 - mask.float()
+    if valid.shape[1] == 1 and image.shape[1] > 1:
+        valid = valid.expand_as(image)
+
+    filled = gaussian_blur2d(image * valid, (kernel_size, kernel_size), (sigma, sigma))
+    weight = gaussian_blur2d(valid,         (kernel_size, kernel_size), (sigma, sigma))
+    filled = filled / (weight + 1e-8)
+
+    return image * valid + filled * (1.0 - valid)
+
+
 def differentiable_tps_warp(
     image: torch.Tensor,
     points_src: torch.Tensor,
     points_dst: torch.Tensor,
+    padding_mode: str = 'zeros',
 ) -> torch.Tensor:
     """
     Warp *image* differentiably using a Thin Plate Spline transformation.
 
     Args:
-        image:      (B, C, H, W) or (H, W) input tensor.
-        points_src: (1, N, 2) or (N, 2) source control points.
-        points_dst: (1, N, 2) or (N, 2) destination control points.
+        image:        (B, C, H, W) or (H, W) input tensor.
+        points_src:   (1, N, 2) or (N, 2) source control points.
+        points_dst:   (1, N, 2) or (N, 2) destination control points.
+        padding_mode: Padding for out-of-bounds pixels. One of:
+                      'zeros'      – fill with 0 (default, original behaviour)
+                      'border'     – repeat edge pixels
+                      'reflection' – mirror image at borders
 
     Returns:
         Warped tensor of the same shape as *image*.
@@ -109,7 +349,24 @@ def differentiable_tps_warp(
     points_dst = points_dst.to(dtype=image.dtype, device=image.device)
 
     kernel_weights, affine_weights = get_tps_transform(points_dst, points_src)
-    warped = warp_image_tps(image, points_src, kernel_weights, affine_weights)
+
+    if padding_mode == 'zeros':
+        # Fast path: use kornia's built-in function
+        warped = warp_image_tps(image, points_src, kernel_weights, affine_weights)
+    else:
+        # Build the dense sampling grid manually so we can pass any padding_mode
+        # to F.grid_sample (older kornia versions don't expose this in warp_image_tps).
+        B, C, H, W = image.shape
+        coords_y = torch.linspace(-1, 1, H, dtype=image.dtype, device=image.device)
+        coords_x = torch.linspace(-1, 1, W, dtype=image.dtype, device=image.device)
+        gy, gx = torch.meshgrid(coords_y, coords_x, indexing='ij')
+        # (1, H*W, 2) in (x, y) order — same convention as warp_image_tps
+        grid_pts = torch.stack([gx.flatten(), gy.flatten()], dim=-1).unsqueeze(0)
+        # TPS maps each output pixel back to its source coordinate
+        src_pts = warp_points_tps(grid_pts, points_src, kernel_weights, affine_weights)
+        src_pts = src_pts.expand(B, -1, -1).view(B, H, W, 2)
+        warped = F.grid_sample(image, src_pts, mode='bilinear',
+                               padding_mode=padding_mode, align_corners=False)
 
     return warped.squeeze(0).squeeze(0) if is_2d else warped
 
@@ -192,7 +449,11 @@ def align_images(
     composition: bool = False,
     only_x: bool = False,
     only_y: bool = False,
+    weight_wrap: bool = False,
     loss_callback = None,
+    padding: str = 'zeros',
+    fill_gaps_kernel: int = 15,
+    fill_gaps_sigma: float = 5.0,
 ):
     """
     Align *image_src* to *image_tgt* using a progressive multi-stage TPS warp.
@@ -266,9 +527,24 @@ def align_images(
         only_y:      If True, control points are only allowed to move along the y-axis
                      (vertical). The x-coordinate of every point is locked to its
                      source position throughout optimisation. Default: False.
+        weight_wrap: If True, uses a warped-intensity-weighted data term:
+                 ``(warped - target)^2 * warped``. This naturally downweights
+                 zero-padded regions (contribution becomes ~0 where warped is 0).
+                 Default: False.
         loss_callback: Optional callable invoked as ``loss_callback(iteration, loss_value)``
                      after every Adam step (1-based iteration index, float loss).
                      Ignored for L-BFGS. Default: None.
+        padding:     How to fill out-of-bounds pixels produced by the warp.
+                     'zeros'      – fill with 0 (default, original behaviour)
+                     'border'     – repeat edge pixels
+                     'reflection' – mirror image at borders
+                     'filter'     – warp with zeros then apply Gaussian-weighted
+                                    inpainting to fill the empty regions (smart
+                                    diffusion-based gap filling)
+        fill_gaps_kernel: Kernel size (odd int) for the Gaussian inpainting used
+                     when padding='filter'. Default: 15.
+        fill_gaps_sigma: Standard deviation for the inpainting Gaussian.
+                     Default: 5.0.
 
     Returns:
         warped (torch.Tensor): Warped source image, shape (1, C, H, W).
@@ -390,6 +666,8 @@ def align_images(
                 opt.zero_grad()
                 warped = differentiable_tps_warp(current_src, pts_src, pts_dst)
                 diff_sq = (warped - tgt).pow(2)
+                if weight_wrap:
+                    diff_sq = diff_sq * warped
                 channel_mses = diff_sq.mean(dim=(0, 2, 3))
                 mse = (channel_mses * weights_tensor).mean()
                 reg = torch.norm(pts_dst - pts_src, dim=-1).mean()
@@ -409,6 +687,8 @@ def align_images(
                 opt.zero_grad()
                 warped = differentiable_tps_warp(current_src, pts_src, pts_dst)
                 diff_sq = (warped - tgt).pow(2)
+                if weight_wrap:
+                    diff_sq = diff_sq * warped
                 channel_mses = diff_sq.mean(dim=(0, 2, 3))
                 mse = (channel_mses * weights_tensor).mean()
                 reg = torch.norm(pts_dst - pts_src, dim=-1).mean()
@@ -431,6 +711,23 @@ def align_images(
                           f" - Loss: {loss.item():.6f} (MSE: {mse.item():.6f}, Reg: {reg.item():.4f})")
 
         return pts_dst
+
+    # --- Final warped image ----------------------------------------------------
+    def _maybe_fill(warped_img):
+        """Apply Gaussian-weighted inpainting when padding='filter'."""
+        if padding == 'filter':
+            gap_mask = (warped_img == 0).all(dim=1, keepdim=True).float()
+            if gap_mask.any():
+                warped_img = fill_gaps(
+                    warped_img, gap_mask,
+                    kernel_size=fill_gaps_kernel,
+                    sigma=fill_gaps_sigma,
+                )
+        return warped_img
+
+    # 'filter' warps with zeros then post-processes; all other modes are passed
+    # directly to F.grid_sample.
+    _pm = 'zeros' if padding == 'filter' else padding
 
     # --- Progressive multi-stage optimisation ----------------------------------
     points_src = None
@@ -466,15 +763,23 @@ def align_images(
         if composition:
             stage_srcs.append(points_src)
             stage_dsts.append(points_dst)
-            # Compose warp: set working image to the output of this stage
+            # Compose warp: optimization is done, so apply the requested padding.
+            # Intermediate stages use zeros (gaps will be overwritten by later
+            # stages); only the last stage uses _pm so border/reflection fills in
+            # correctly at the true boundary.
+            is_last = (stage_idx == len(levels) - 1)
             with torch.no_grad():
-                current_src = differentiable_tps_warp(current_src, points_src, points_dst)
+                current_src = differentiable_tps_warp(
+                    current_src, points_src, points_dst,
+                    padding_mode=_pm if is_last else 'zeros',
+                )
 
-    # --- Final warped image ----------------------------------------------------
     if composition:
-        warped = current_src
+        warped = _maybe_fill(current_src)
         return warped, stage_srcs, stage_dsts
     else:
         with torch.no_grad():
-            warped = differentiable_tps_warp(src, points_src, points_dst)
+            warped = differentiable_tps_warp(src, points_src, points_dst,
+                                             padding_mode=_pm)
+        warped = _maybe_fill(warped)
         return warped, points_src, points_dst

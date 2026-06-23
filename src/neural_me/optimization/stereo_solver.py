@@ -13,79 +13,7 @@ from typing import Optional, List, Tuple, Dict
 
 from ..core.atmospheres.stereoscopic import StereoscopicAtmosphere
 from ..core import MEProblem
-from abc import ABC, abstractmethod
-
-
-class DegradationOperator(nn.Module, ABC):
-    """
-    Abstract base class for instrumental degradation (Stray Light, PSF, etc.)
-    """
-
-    @abstractmethod
-    def forward(
-        self, stokes: Tuple[torch.Tensor, ...], atmosphere: StereoscopicAtmosphere
-    ) -> Tuple[torch.Tensor, ...]:
-        pass
-
-
-class LegacyActiveOperator(DegradationOperator):
-    """
-    Implements the logic found in the active lines of
-    ME_combinado_mecpp_caliV.py.
-
-    Legacy: out = (cali)*stokes + (1-cali)*stokes
-    Note: If cali is a scalar, this is identity. If cali is a tensor, it broadcasts.
-    """
-
-    def forward(
-        self, stokes: Tuple[torch.Tensor, ...], atmosphere: StereoscopicAtmosphere
-    ) -> Tuple[torch.Tensor, ...]:
-        I, Q, U, V = stokes
-        cali = atmosphere.cali
-
-        # Correct stray-light mixing: weighted combination of pixel stokes with
-        # spatial mean (background scattered light).
-        # Legacy script line 162 intended: out = (cali)*stokes + (1-cali)*<stokes>
-        I_mean = I.mean(dim=0, keepdim=True)
-        Q_mean = Q.mean(dim=0, keepdim=True)
-        U_mean = U.mean(dim=0, keepdim=True)
-        V_mean = V.mean(dim=0, keepdim=True)
-
-        I_new = cali * I + (1.0 - cali) * I_mean
-        Q_new = cali * Q + (1.0 - cali) * Q_mean
-        U_new = cali * U + (1.0 - cali) * U_mean
-        V_new = cali * V + (1.0 - cali) * V_mean
-
-        return I_new, Q_new, U_new, V_new
-
-
-class StrayLightOperator(DegradationOperator):
-    """
-    Implements a standard stray light correction:
-    out = (1 - cali) * stokes + cali * I_mean
-
-    Where I_mean is the spatial average of I (assumed scattered light).
-    """
-
-    def forward(
-        self, stokes: Tuple[torch.Tensor, ...], atmosphere: StereoscopicAtmosphere
-    ) -> Tuple[torch.Tensor, ...]:
-        I, Q, U, V = stokes
-        cali = atmosphere.cali
-
-        # Compute spatial mean (batch/pixels dim is 0)
-        # Shape: (N, n_lambda) -> Mean -> (1, n_lambda)
-        I_mean = I.mean(dim=0, keepdim=True)
-        Q_mean = Q.mean(dim=0, keepdim=True)
-        U_mean = U.mean(dim=0, keepdim=True)
-        V_mean = V.mean(dim=0, keepdim=True)
-
-        I_new = (1.0 - cali) * I + cali * I_mean
-        Q_new = (1.0 - cali) * Q + cali * Q_mean
-        U_new = (1.0 - cali) * U + cali * U_mean
-        V_new = (1.0 - cali) * V + cali * V_mean
-
-        return I_new, Q_new, U_new, V_new
+from .degradation import DegradationOperator
 
 
 class StereoSolver:
@@ -117,16 +45,8 @@ class StereoSolver:
         self.alpha = alpha
         self.degradation_operators = degradation_operators or {}
 
-        # Register operators as submodules if they have parameters (though mostly they use atm params)
-        # If passed in list/dict, we can't easily register unless we are an nn.Module ourselves.
-        # StereoSolver is NOT an nn.Module.
-        # However, the optimizer needs to know strictly about parameters.
-        # Our operators use `atmosphere.cali` so that is covered by `atmosphere.parameters()`.
-        # If an operator had its OWN parameters, we'd need to add them.
-        # For now, we assume operators rely on Atmosphere params or are fixed.
-
+        # Collect parameters to optimize (atmosphere parameters + any trainable operator parameters)
         params = list(self.atmosphere.parameters())
-        # If operators have parameters, add them:
         for op in self.degradation_operators.values():
             params.extend(list(op.parameters()))
 
@@ -161,19 +81,8 @@ class StereoSolver:
                 syn2 = self.degradation_operators[1](syn2, self.atmosphere)
 
             # 4. Compute Loss
-            def calc_loss(syn, obs_obj):
-                I, Q, U, V = syn
-                # Simple MSE
-                # mask = obs_obj.active_wav_idx # Not used currently in simple MSE
-                loss = 0.0
-                loss += torch.mean((I - obs_obj.stokes_I) ** 2)
-                loss += torch.mean((Q - obs_obj.stokes_Q) ** 2)
-                loss += torch.mean((U - obs_obj.stokes_U) ** 2)
-                loss += torch.mean((V - obs_obj.stokes_V) ** 2)
-                return loss
-
-            loss1 = calc_loss(syn1, self.problem1.obs)
-            loss2 = calc_loss(syn2, self.problem2.obs)
+            loss1 = self.problem1.compute_loss_from_syn(syn1)
+            loss2 = self.problem2.compute_loss_from_syn(syn2)
 
             # Combined Loss
             loss = (1.0 - self.alpha) * loss1 + self.alpha * loss2

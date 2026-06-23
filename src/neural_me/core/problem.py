@@ -211,6 +211,50 @@ class MEProblem:
 
         return I, Q, U, V
 
+    def compute_loss_from_syn(
+        self,
+        syn: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+        indices: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Computes weighted loss (MSE or L1 based on self.loss_type) from synthetic Stokes profiles.
+        """
+        I_mod, Q_mod, U_mod, V_mod = syn
+        if indices is not None:
+            obs_I = self.obs.stokes_I[indices]
+            obs_Q = self.obs.stokes_Q[indices]
+            obs_U = self.obs.stokes_U[indices]
+            obs_V = self.obs.stokes_V[indices]
+        else:
+            obs_I = self.obs.stokes_I
+            obs_Q = self.obs.stokes_Q
+            obs_U = self.obs.stokes_U
+            obs_V = self.obs.stokes_V
+
+        mask = self.obs.active_wav_idx
+        res_I = (I_mod - obs_I)[..., mask]
+        res_Q = (Q_mod - obs_Q)[..., mask]
+        res_U = (U_mod - obs_U)[..., mask]
+        res_V = (V_mod - obs_V)[..., mask]
+
+        if self.loss_type == "l1":
+            err_I = torch.mean(torch.abs(res_I))
+            err_Q = torch.mean(torch.abs(res_Q))
+            err_U = torch.mean(torch.abs(res_U))
+            err_V = torch.mean(torch.abs(res_V))
+        else:
+            err_I = torch.mean(res_I**2)
+            err_Q = torch.mean(res_Q**2)
+            err_U = torch.mean(res_U**2)
+            err_V = torch.mean(res_V**2)
+
+        return (
+            self.weights[0] * err_I
+            + self.weights[1] * err_Q
+            + self.weights[2] * err_U
+            + self.weights[3] * err_V
+        )
+
     def compute_loss(
         self,
         atmosphere: Atmosphere,
@@ -220,60 +264,43 @@ class MEProblem:
         """
         Computes weighted loss (MSE or L1 based on self.loss_type).
         """
-        # 1. Forward Pass
         if indices is not None:
             atm_subset = atmosphere[indices]
-            I_mod, Q_mod, U_mod, V_mod = self.compute_forward_model(atm_subset)
-
-            obs_I = self.obs.stokes_I[indices]
-            obs_Q = self.obs.stokes_Q[indices]
-            obs_U = self.obs.stokes_U[indices]
-            obs_V = self.obs.stokes_V[indices]
+            syn = self.compute_forward_model(atm_subset)
         else:
-            I_mod, Q_mod, U_mod, V_mod = self.compute_forward_model(atmosphere)
-            obs_I = self.obs.stokes_I
-            obs_Q = self.obs.stokes_Q
-            obs_U = self.obs.stokes_U
-            obs_V = self.obs.stokes_V
+            syn = self.compute_forward_model(atmosphere)
 
-        # 2. Masking (Wavelengths)
-        mask = self.obs.active_wav_idx
+        loss = self.compute_loss_from_syn(syn, indices=indices)
 
-        # 3. Residuals
-        res_I = (I_mod - obs_I)[..., mask]
-        res_Q = (Q_mod - obs_Q)[..., mask]
-        res_U = (U_mod - obs_U)[..., mask]
-        res_V = (V_mod - obs_V)[..., mask]
-
-        # 4. Error Calculation per Stokes
-        if self.loss_type == "l1":
-            err_I = torch.mean(torch.abs(res_I))
-            err_Q = torch.mean(torch.abs(res_Q))
-            err_U = torch.mean(torch.abs(res_U))
-            err_V = torch.mean(torch.abs(res_V))
-        else:  # 'mse' default
-            err_I = torch.mean(res_I**2)
-            err_Q = torch.mean(res_Q**2)
-            err_U = torch.mean(res_U**2)
-            err_V = torch.mean(res_V**2)
-
-        # 5. Weighted Sum
-        loss = (
-            self.weights[0] * err_I
-            + self.weights[1] * err_Q
-            + self.weights[2] * err_U
-            + self.weights[3] * err_V
-        )
-
-        # 6. Regularization
+        # Regularization
         reg_loss = torch.tensor(0.0, device=self.device)
         if self.regularization_weights and indices is None:
-            # Only compute reg if we are processing the full grid/frame
-            # otherwise spatial topology is lost or incomplete
             reg_loss = self._compute_regularization(atmosphere)
             loss += reg_loss
 
         if return_breakdown:
+            I_mod, Q_mod, U_mod, V_mod = syn
+            if indices is not None:
+                obs_I, obs_Q, obs_U, obs_V = self.obs.stokes_I[indices], self.obs.stokes_Q[indices], self.obs.stokes_U[indices], self.obs.stokes_V[indices]
+            else:
+                obs_I, obs_Q, obs_U, obs_V = self.obs.stokes_I, self.obs.stokes_Q, self.obs.stokes_U, self.obs.stokes_V
+            mask = self.obs.active_wav_idx
+            res_I = (I_mod - obs_I)[..., mask]
+            res_Q = (Q_mod - obs_Q)[..., mask]
+            res_U = (U_mod - obs_U)[..., mask]
+            res_V = (V_mod - obs_V)[..., mask]
+
+            if self.loss_type == "l1":
+                err_I = torch.mean(torch.abs(res_I))
+                err_Q = torch.mean(torch.abs(res_Q))
+                err_U = torch.mean(torch.abs(res_U))
+                err_V = torch.mean(torch.abs(res_V))
+            else:
+                err_I = torch.mean(res_I**2)
+                err_Q = torch.mean(res_Q**2)
+                err_U = torch.mean(res_U**2)
+                err_V = torch.mean(res_V**2)
+
             return loss, {
                 "loss_I": err_I.item(),
                 "loss_Q": err_Q.item(),
@@ -283,134 +310,3 @@ class MEProblem:
             }
 
         return loss
-
-
-class MultiMEProblem:
-    """
-    Multi-instrument inversion problem for stereoscopic observations.
-
-    Manages multiple MEProblem instances and computes a combined loss function.
-    Works together with StereoscopicParameterModel for coupled inversions.
-
-    Features:
-    1. Weighted combination of losses from each instrument
-    2. Optional stray light calibration (applied to specified instrument)
-    3. Shared convergence tracking
-    """
-
-    def __init__(
-        self,
-        problems: List[MEProblem],
-        weights: Optional[List[float]] = None,
-        cali_instrument: int = -1,
-    ):
-        """
-        Initialize MultiMEProblem.
-
-        Args:
-            problems: List of MEProblem instances, one per instrument
-            weights: Weight for each instrument's loss (default: equal weights)
-            cali_instrument: Index of instrument to apply stray light calibration (-1 = none)
-        """
-        self.problems = problems
-        self.n_problems = len(problems)
-
-        if weights is None:
-            weights = [1.0] * self.n_problems
-        self.weights = weights
-
-        self.cali_instrument = cali_instrument
-        self.device = problems[0].device
-
-    def compute_loss(
-        self,
-        atmospheres: List[Atmosphere],
-        cali: Optional[torch.Tensor] = None,
-        return_breakdown: bool = False,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, float]]]:
-        """
-        Compute combined loss from all instruments.
-
-        Args:
-            atmospheres: List of Atmosphere objects (one per problem)
-            cali: Optional calibration factor tensor (for stray light correction)
-            return_breakdown: If True, return per-instrument breakdown
-
-        Returns:
-            Combined loss (and optional breakdown dict)
-        """
-        assert len(atmospheres) == self.n_problems, (
-            f"Expected {self.n_problems} atmospheres, got {len(atmospheres)}"
-        )
-
-        total_loss = torch.tensor(0.0, device=self.device)
-        breakdown = {}
-
-        for i, (prob, atm, w) in enumerate(
-            zip(self.problems, atmospheres, self.weights)
-        ):
-            # Apply stray light calibration if applicable
-            # This would require modifying the forward model output, not the atmosphere
-            # For now, compute loss without calibration (calibration handled externally)
-
-            loss_i, bd_i = prob.compute_loss(atm, return_breakdown=True)
-            weighted_loss = w * loss_i
-            total_loss += weighted_loss
-
-            breakdown[f"instrument_{i}"] = {
-                "loss": loss_i.item(),
-                "weighted_loss": weighted_loss.item(),
-                **{f"{k}_{i}": v for k, v in bd_i.items()},
-            }
-
-        breakdown["total"] = total_loss.item()
-
-        if return_breakdown:
-            return total_loss, breakdown
-        return total_loss
-
-    def compute_forward_models(
-        self, atmospheres: List[Atmosphere]
-    ) -> List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
-        """
-        Run forward models for all instruments.
-
-        Returns:
-            List of (I, Q, U, V) tuples, one per instrument
-        """
-        results = []
-        for prob, atm in zip(self.problems, atmospheres):
-            results.append(prob.compute_forward_model(atm))
-        return results
-
-    def apply_calibration(
-        self,
-        stokes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
-        cali: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Apply stray light calibration to Stokes profiles.
-
-        Models stray light as: I_out = (1 - α) * I_in + α * <I_in>
-
-        Args:
-            stokes: Tuple of (I, Q, U, V) tensors
-            cali: Calibration factor α in [0, 1]
-
-        Returns:
-            Calibrated (I, Q, U, V)
-        """
-        I, Q, U, V = stokes
-
-        # Mean over all pixels (dim=0) for each wavelength
-        I_mean = I.mean(dim=0, keepdim=True)
-        Q_mean = Q.mean(dim=0, keepdim=True)
-        U_mean = U.mean(dim=0, keepdim=True)
-        V_mean = V.mean(dim=0, keepdim=True)
-
-        I_cal = (1 - cali) * I + cali * I_mean
-        Q_cal = (1 - cali) * Q + cali * Q_mean
-        U_cal = (1 - cali) * U + cali * U_mean
-        V_cal = (1 - cali) * V + cali * V_mean
-
-        return I_cal, Q_cal, U_cal, V_cal

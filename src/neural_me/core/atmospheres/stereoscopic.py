@@ -33,13 +33,15 @@ class StereoscopicAtmosphere(nn.Module):
         self,
         grid_shape: Tuple[int, ...],
         gamma: float = 101.0,
+        alpha: float = 0.0,
         rotangle: float = 90.0,
         device: Optional[torch.device] = None,
     ):
         """
         Args:
             grid_shape: (ny, nx)
-            gamma: Inclination offset in DEGREES.
+            gamma: Longitudinal separation angle in DEGREES.
+            alpha: Elevation tilt angle in DEGREES.
             rotangle: Azimuth rotation in DEGREES.
             device: Torch device.
         """
@@ -50,6 +52,9 @@ class StereoscopicAtmosphere(nn.Module):
         # Geometry constants
         self.gamma_rad = torch.tensor(
             np.radians(gamma), device=self.device, dtype=torch.float32
+        )
+        self.alpha_rad = torch.tensor(
+            np.radians(alpha), device=self.device, dtype=torch.float32
         )
         self.rotangle_rad = torch.tensor(
             np.radians(rotangle), device=self.device, dtype=torch.float32
@@ -289,6 +294,11 @@ class StereoscopicAtmosphere(nn.Module):
         # --- Calibration: physical scalar in [0, 1] ---
         self.cali.data.clamp_(0.0, 1.0)
 
+        # --- Global Magnetic Field (Cartesian) ---
+        self.global_Blos.data.clamp_(-3500.0, 3500.0)
+        self.global_Bn.data.clamp_(-3500.0, 3500.0)
+        self.global_Bw.data.clamp_(-3500.0, 3500.0)
+
 
     def get_atmosphere(self, instrument_index: int) -> "ViewAtmosphere":
         """
@@ -338,17 +348,23 @@ class ViewAtmosphere(Atmosphere):
         elif self.index == 1:
             # Rotated transformation
             gamma = self.parent.gamma_rad
+            alpha = self.parent.alpha_rad
             rot = self.parent.rotangle_rad
 
             cos_g = torch.cos(gamma)
             sin_g = torch.sin(gamma)
+            cos_a = torch.cos(alpha)
+            sin_a = torch.sin(alpha)
 
-            # Legacy equations
-            # Blos_B = Blos_A*cos(gamma) + Bw_A*sin(gamma)
-            # Bw_B = -Blos_A*sin(gamma) + Bw_A*cos(gamma)
-            Blos_new = Blos * cos_g + Bw * sin_g
-            Bw_new = -Blos * sin_g + Bw * cos_g
-            Bn_new = Bn
+            # First rotation by longitudinal separation gamma around Bn (North/Y axis):
+            Blos_prime = Blos * cos_g + Bw * sin_g
+            Bn_prime = Bn
+            Bw_prime = -Blos * sin_g + Bw * cos_g
+
+            # Second rotation by elevation tilt alpha around Bw_prime (West/Z axis):
+            Blos_new = Blos_prime * cos_a + Bn_prime * sin_a
+            Bn_new = -Blos_prime * sin_a + Bn_prime * cos_a
+            Bw_new = Bw_prime
 
             B2 = Blos_new**2 + Bn_new**2 + Bw_new**2 + 1e-8
             Btot = torch.sqrt(B2)
