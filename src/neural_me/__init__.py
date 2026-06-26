@@ -23,6 +23,13 @@ from neural_me.physics.milne_eddington import MilneEddington
 # Optimization
 from neural_me.optimization.pixel_solver import PixelSolver
 
+# Instruments
+from neural_me.instruments import (
+    load_spectral_psf,
+    load_spatial_psf,
+    get_resource_path,
+)
+
 __version__ = "0.1.0"
 
 # Auto-apply plot parameters on import (graceful fallback)
@@ -47,4 +54,8 @@ __all__ = [
     "MilneEddington",
     # Optimization
     "PixelSolver",
+    # Instruments
+    "load_spectral_psf",
+    "load_spatial_psf",
+    "get_resource_path",
 ]

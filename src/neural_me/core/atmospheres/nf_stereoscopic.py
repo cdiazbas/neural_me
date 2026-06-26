@@ -42,8 +42,6 @@ class StereoscopicNFAtmosphere(nn.Module):
         m_freqs: int = 512,
         sigma: Union[float, List[float], List[List[float]]] = 100.0,
         tune_beta: bool = False,
-        epsilon: Optional[float] = None,
-        tune_epsilon: bool = True,
     ):
         super().__init__()
         self.grid_shape = grid_shape
@@ -62,18 +60,10 @@ class StereoscopicNFAtmosphere(nn.Module):
 
         # Normalization
         self._normalization = self.DEFAULT_NORMALIZATION.copy()
+
         if norm:
             self._normalization.update(norm)
         self._defaults = self.DEFAULT_PARAMETERS.copy()
-
-        # Define calibration parameter
-        initial_eps = epsilon if epsilon is not None else self._defaults["epsilon"]
-        self.epsilon = nn.Parameter(
-            torch.tensor([initial_eps], device=self.device)
-        )
-        self.epsilon.requires_grad = tune_epsilon
-
-        # Generate coordinates
         self.n_elements = int(np.prod(grid_shape))
         coords_all = to_coordinates(grid_shape, device=self.device)
         self.register_buffer("coords", coords_all)
@@ -172,9 +162,9 @@ class StereoscopicNFAtmosphere(nn.Module):
 
     def clamp_parameters(self):
         """
-        Clamps the calibration parameter. Activations handle physical constraints.
+        Clamps atmosphere parameters. Activations handle physical constraints.
         """
-        self.epsilon.data.clamp_(0.0, 1.0)
+        pass
 
     def to_stack(self) -> torch.Tensor:
         """

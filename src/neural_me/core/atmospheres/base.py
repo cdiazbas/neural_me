@@ -93,7 +93,6 @@ DEFAULT_STEREO_NORMALIZATION = {
     "global_Bn": DEFAULT_NORMALIZATION["Blos"],
     "global_Bw": DEFAULT_NORMALIZATION["Blos"],
     **_expand_stereo_thermo_dict(DEFAULT_NORMALIZATION),
-    "epsilon": 1.0,
 }
 
 
@@ -102,7 +101,6 @@ DEFAULT_STEREO_PARAMETERS = {
     "global_Bn": 100.0,
     "global_Bw": 100.0,
     **_expand_stereo_thermo_dict(DEFAULT_PARAMETERS),
-    "epsilon": 0.245,
 }
 
 
@@ -111,7 +109,6 @@ DEFAULT_STEREO_CLAMP_BOUNDS = {
     "global_Bn": DEFAULT_CLAMP_BOUNDS["Blos"],
     "global_Bw": DEFAULT_CLAMP_BOUNDS["Blos"],
     **_expand_stereo_thermo_dict(DEFAULT_CLAMP_BOUNDS),
-    "epsilon": (0.0, 1.0),
 }
 
 

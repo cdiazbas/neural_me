@@ -71,16 +71,49 @@ class PixelSolver:
             )
 
         # Print High-Level Optimization Setup Summary
-        print("\n" + "=" * 60)
-        print("PIXEL SOLVER INITIALIZATION SUMMARY")
-        print("=" * 60)
+        W = 62
+        inner = W - 2
+
+        def row(text=""):
+            return f"│{text:<{inner}}│"
+
+        lines = []
         atm_type = type(self.atmosphere).__name__
-        print(f"Atmosphere Model   : {atm_type} (Grid Shape: {self.grid_shape})")
-        print(f"MEProblem:")
-        print(f"  Line ID          : {self.problem.nlinea}")
-        print(f"  Wavelengths      : {len(self.problem.obs.wavelengths)} points")
-        print(f"  Data Shape       : {self.problem.obs.data.shape}")
-        print("=" * 60 + "\n")
+        lines.append("┌" + "─" * inner + "┐")
+        lines.append(row("           PIXEL SOLVER INITIALIZATION SUMMARY             "))
+        lines.append("├" + "─" * inner + "┤")
+        lines.append(row(f"  Atmosphere Model   : {atm_type}"))
+        lines.append(row(f"  Grid Shape         : {self.grid_shape}"))
+        lines.append("├" + "─" * inner + "┤")
+        lines.append(row("  Observation"))
+        lines.append(row(f"    - Line ID        : {self.problem.nlinea}"))
+        lines.append(row(f"    - Wavelengths    : {len(self.problem.obs.wavelengths)}"))
+        lines.append(row(f"    - Data Shape     : {list(self.problem.obs.data.shape)}"))
+
+        # Parameter trainability summary
+        lines.append("├" + "─" * inner + "┤")
+        all_params = list(self.atmosphere.named_parameters())
+        learnable = [n for n, p in all_params if p.requires_grad]
+        frozen    = [n for n, p in all_params if not p.requires_grad]
+        clean = lambda n: n.replace("_raw", "")
+        lines.append(row(f"  Atmosphere Parameters"))
+        lines.append(row(f"    - Total          : {len(all_params)}  (learnable: {len(learnable)}, frozen: {len(frozen)})"))
+        if frozen:
+            frozen_str = ", ".join(clean(n) for n in frozen)
+            prefix = "    - Frozen         : "
+            available = inner - 2 - len(prefix)
+            words, current_line = [], ""
+            for part in frozen_str.split(", "):
+                if current_line and len(current_line) + 2 + len(part) > available:
+                    lines.append(row(f"  {prefix}{current_line}"))
+                    prefix = " " * len(prefix)
+                    current_line = part
+                else:
+                    current_line = f"{current_line}, {part}" if current_line else part
+            if current_line:
+                lines.append(row(f"  {prefix}{current_line}"))
+        lines.append("└" + "─" * inner + "┘")
+        print("\n" + "\n".join(lines) + "\n")
 
     def set_from_wfa(
         self,

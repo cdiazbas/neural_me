@@ -53,50 +53,63 @@ class StereoSolver:
         self.optimizer = torch.optim.Adam(params, lr=lr)
 
         # Print High-Level Optimization Setup Summary
+        W = 62  # total width including the two │ characters
+        inner = W - 2  # usable characters between │ and │
+
+        def row(text=""):
+            """Pad text to fill exactly inner columns."""
+            return f"│{text:<{inner}}│"
+
         lines = []
-        lines.append("┌────────────────────────────────────────────────────────────┐")
-        lines.append("│         STEREOSCOPIC SOLVER INITIALIZATION SUMMARY         │")
-        lines.append("├────────────────────────────────────────────────────────────┤")
+        lines.append("┌" + "─" * inner + "┐")
+        lines.append(row("         STEREOSCOPIC SOLVER INITIALIZATION SUMMARY         "))
+        lines.append("├" + "─" * inner + "┤")
         atm_type = type(self.atmosphere).__name__
-        lines.append(f"│  Atmosphere Model   : {atm_type:<36} │")
-        lines.append(f"│  Grid Shape         : {str(self.atmosphere.grid_shape):<36} │")
-        lines.append(f"│  Loss Weight (alpha): {self.alpha:<36.3f} │")
-        lines.append(f"│    - Telescope 1    : {1.0 - self.alpha:<36.3f} │")
-        lines.append(f"│    - Telescope 2    : {self.alpha:<36.3f} │")
-        lines.append(f"│  Learning Rate      : {lr:<36} │")
-        
-        for inst_idx, prob, name in [(1, self.problem1, "Telescope 1 (Reference View)"), 
+        lines.append(row(f"  Atmosphere Model   : {atm_type}"))
+        lines.append(row(f"  Grid Shape         : {self.atmosphere.grid_shape}"))
+        lines.append(row(f"  Loss Weight (alpha): {self.alpha:.3f}"))
+        lines.append(row(f"    - Telescope 1    : {1.0 - self.alpha:.3f}"))
+        lines.append(row(f"    - Telescope 2    : {self.alpha:.3f}"))
+        lines.append(row(f"  Learning Rate      : {lr}"))
+
+        for inst_idx, prob, name in [(1, self.problem1, "Telescope 1 (Reference View)"),
                                      (2, self.problem2, "Telescope 2 (Secondary View)")]:
-            lines.append("├────────────────────────────────────────────────────────────┤")
-            lines.append(f"│  {name:<56} │")
-            lines.append(f"│    - Line ID        : {prob.nlinea:<34} │")
-            lines.append(f"│    - Wavelengths    : {len(prob.obs.wavelengths):<34d} │")
-            data_shape_str = str(list(prob.obs.data.shape))
-            lines.append(f"│    - Data Shape     : {data_shape_str:<34} │")
+            lines.append("├" + "─" * inner + "┤")
+            lines.append(row(f"  {name}"))
+            lines.append(row(f"    - Line ID        : {prob.nlinea}"))
+            lines.append(row(f"    - Wavelengths    : {len(prob.obs.wavelengths)}"))
+            lines.append(row(f"    - Data Shape     : {list(prob.obs.data.shape)}"))
             op = self.degradation_operators.get(inst_idx)
             if op is not None:
                 op_name = type(op).__name__
-                # Check if operator has local epsilon
-                if getattr(op, "epsilon", None) is not None:
-                    eps_val = op.epsilon.item()
-                    is_learnable = isinstance(op.epsilon, nn.Parameter) and op.epsilon.requires_grad
-                    learn_str = "learnable" if is_learnable else "fixed"
-                    lines.append(f"│    - Degradation    : {op_name:<34} │")
-                    lines.append(f"│                       ({learn_str} ε = {eps_val:.4f})              │")
-                else:
-                    # Check if atmosphere has epsilon
-                    eps_val = getattr(self.atmosphere, "epsilon", None)
-                    if eps_val is not None:
-                        eps_val = eps_val.item()
-                        is_learnable = self.atmosphere.epsilon.requires_grad
-                        learn_str = "learnable" if is_learnable else "fixed"
-                        lines.append(f"│    - Degradation    : {op_name:<34} │")
-                        lines.append(f"│                       ({learn_str} atmos ε = {eps_val:.4f})        │")
-                    else:
-                        lines.append(f"│    - Degradation    : {op_name:<34} │")
+                lines.append(row(f"    - Degradation    : {op_name}"))
             else:
-                lines.append(f"│    - Degradation    : {'None (Ideal observations)':<34} │")
-        lines.append("└────────────────────────────────────────────────────────────┘")
+                lines.append(row("    - Degradation    : None (Ideal observations)"))
+
+        # Parameter trainability summary
+        lines.append("├" + "─" * inner + "┤")
+        all_params = list(self.atmosphere.named_parameters())
+        learnable = [n for n, p in all_params if p.requires_grad]
+        frozen    = [n for n, p in all_params if not p.requires_grad]
+        clean = lambda n: n.replace("_raw", "")
+        lines.append(row(f"  Atmosphere Parameters"))
+        lines.append(row(f"    - Total          : {len(all_params)}  (learnable: {len(learnable)}, frozen: {len(frozen)})"))
+        if frozen:
+            frozen_str = ", ".join(clean(n) for n in frozen)
+            # wrap into multiple rows if too long
+            prefix = "    - Frozen         : "
+            available = inner - 2 - len(prefix)
+            words, current_line = [], ""
+            for part in frozen_str.split(", "):
+                if current_line and len(current_line) + 2 + len(part) > available:
+                    lines.append(row(f"  {prefix}{current_line}"))
+                    prefix = " " * len(prefix)
+                    current_line = part
+                else:
+                    current_line = f"{current_line}, {part}" if current_line else part
+            if current_line:
+                lines.append(row(f"  {prefix}{current_line}"))
+        lines.append("└" + "─" * inner + "┘")
         print("\n" + "\n".join(lines) + "\n")
 
     def solve(

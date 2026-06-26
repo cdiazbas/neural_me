@@ -3,11 +3,13 @@ from neural_me.optimization.levmar_solver import LevMarSolver
 from neural_me.optimization.stereo_solver import StereoSolver
 from neural_me.optimization.degradation import (
     DegradationOperator,
-    LegacyActiveOperator,
+    PSFKernel,
     StrayLightOperator,
     SpatialPSFOperator,
     SpectralPSFOperator,
     WarpOperator,
+    TwoPSFOperator,
+    ExtendedPSFOperator,
 )
 
 __all__ = [
@@ -15,9 +17,11 @@ __all__ = [
     "LevMarSolver",
     "StereoSolver",
     "DegradationOperator",
-    "LegacyActiveOperator",
+    "PSFKernel",
     "StrayLightOperator",
     "SpatialPSFOperator",
     "SpectralPSFOperator",
     "WarpOperator",
+    "TwoPSFOperator",
+    "ExtendedPSFOperator",
 ]

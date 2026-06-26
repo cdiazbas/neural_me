@@ -253,7 +253,8 @@ class MEProblem:
             + self.weights[1] * err_Q
             + self.weights[2] * err_U
             + self.weights[3] * err_V
-        )
+        ) / 4.0
+
 
     def compute_loss(
         self,

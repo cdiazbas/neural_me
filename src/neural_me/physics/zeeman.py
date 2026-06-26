@@ -159,15 +159,19 @@ def paramLine(nlinea):
     gef = geff(ju, gu, jl, gl)
 
     # Some useful information
-    print("┌────────────────────────────────────────────────────────────┐")
-    print(f"│ SPECTRAL LINE PROFILE DETAILS (Line {lineaToFind:2d})                     │")
-    print("├────────────────────────────────────────────────────────────┤")
-    print(f"│  Element     : {elem:<43} │")
-    print(f"│  λ₀ (lambda) : {l0:<43.4f} │")
-    print(f"│  Upper state : j={ju:<4.1f} l={lu:<4d} s={su:<4.1f} g_u={gu:<18.2f} │")
-    print(f"│  Lower state : j={jl:<4.1f} l={ll:<4d} s={sl:<4.1f} g_l={gl:<18.2f} │")
-    print(f"│  Effective g : {gef:<43.2f} │")
-    print("└────────────────────────────────────────────────────────────┘")
+    W = 62
+    inner = W - 2
+    def row(text=""):
+        return f"│{text:<{inner}}│"
+    print("┌" + "─" * inner + "┐")
+    print(row(f" SPECTRAL LINE PROFILE DETAILS (Line {lineaToFind:2d})"))
+    print("├" + "─" * inner + "┤")
+    print(row(f"  Element     : {elem}"))
+    print(row(f"  λ₀ (lambda) : {l0:.4f}"))
+    print(row(f"  Upper state : j={ju:<4.1f} l={lu:<4d} s={su:<4.1f} g_u={gu:.2f}"))
+    print(row(f"  Lower state : j={jl:<4.1f} l={ll:<4d} s={sl:<4.1f} g_l={gl:.2f}"))
+    print(row(f"  Effective g : {gef:.2f}"))
+    print("└" + "─" * inner + "┘")
 
     # Normalization:
     spi /= sum(spi)

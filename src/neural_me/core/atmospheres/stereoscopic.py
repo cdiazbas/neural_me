@@ -38,8 +38,6 @@ class StereoscopicAtmosphere(nn.Module):
         gamma: float = 101.0,
         beta: float = 0.0,
         delta: float = 90.0,
-        epsilon: Optional[float] = None,
-        tune_epsilon: bool = True,
         device: Optional[torch.device] = None,
     ):
         """
@@ -70,17 +68,17 @@ class StereoscopicAtmosphere(nn.Module):
         # --- 1. Global Magnetic Field (Cartesian) ---
         # Initialized with noise to avoid 0-gradient singularity
         global_noise_std = 10.0
-        self.global_Blos = nn.Parameter(
-            torch.randn(grid_shape, device=self.device) * global_noise_std
-            + self._defaults["global_Blos"]
+        self.global_Blos_raw = nn.Parameter(
+            (torch.randn(grid_shape, device=self.device) * global_noise_std
+             + self._defaults["global_Blos"]) / self._normalization["global_Blos"]
         )
-        self.global_Bn = nn.Parameter(
-            torch.randn(grid_shape, device=self.device) * global_noise_std
-            + self._defaults["global_Bn"]
+        self.global_Bn_raw = nn.Parameter(
+            (torch.randn(grid_shape, device=self.device) * global_noise_std
+             + self._defaults["global_Bn"]) / self._normalization["global_Bn"]
         )
-        self.global_Bw = nn.Parameter(
-            torch.randn(grid_shape, device=self.device) * global_noise_std
-            + self._defaults["global_Bw"]
+        self.global_Bw_raw = nn.Parameter(
+            (torch.randn(grid_shape, device=self.device) * global_noise_std
+             + self._defaults["global_Bw"]) / self._normalization["global_Bw"]
         )
 
         # --- 2. Instrument 1 Thermodynamics (Hinode) ---
@@ -192,17 +190,23 @@ class StereoscopicAtmosphere(nn.Module):
             )
         )
 
-        # --- 4. Calibration ---
-        initial_eps = epsilon if epsilon is not None else self._defaults["epsilon"]
-        self.epsilon = nn.Parameter(
-            torch.tensor([initial_eps], device=self.device)
-        )
-        self.epsilon.requires_grad = tune_epsilon
         print(f"StereoscopicAtmosphere initialized | Grid: {self.grid_shape} | γ={gamma:.1f}°, β={beta:.1f}°, δ={delta:.1f}°")
 
     @property
     def normalization(self):
         return self._normalization
+
+    @property
+    def global_Blos(self) -> torch.Tensor:
+        return self.global_Blos_raw * self._normalization["global_Blos"]
+
+    @property
+    def global_Bn(self) -> torch.Tensor:
+        return self.global_Bn_raw * self._normalization["global_Bn"]
+
+    @property
+    def global_Bw(self) -> torch.Tensor:
+        return self.global_Bw_raw * self._normalization["global_Bw"]
 
     # ------------------------------------------------------------------ #
     #  Clamp helpers (mirrors Atmosphere base class API)
@@ -230,9 +234,9 @@ class StereoscopicAtmosphere(nn.Module):
         if method == "default":
             # Re-initialize with random noise / default values similar to __init__
             with torch.no_grad():
-                self.global_Blos.normal_(0, 10).add_(self._defaults["global_Blos"])
-                self.global_Bn.normal_(0, 10).add_(self._defaults["global_Bn"])
-                self.global_Bw.normal_(0, 10).add_(self._defaults["global_Bw"])
+                self.global_Blos_raw.normal_(0, 10 / self._normalization["global_Blos"]).add_(self._defaults["global_Blos"] / self._normalization["global_Blos"])
+                self.global_Bn_raw.normal_(0, 10 / self._normalization["global_Bn"]).add_(self._defaults["global_Bn"] / self._normalization["global_Bn"])
+                self.global_Bw_raw.normal_(0, 10 / self._normalization["global_Bw"]).add_(self._defaults["global_Bw"] / self._normalization["global_Bw"])
                 self.thermo1_vlos.fill_(
                     self._defaults["thermo1_vlos"] / self._normalization["vlos"]
                 )
@@ -289,7 +293,6 @@ class StereoscopicAtmosphere(nn.Module):
                         self._defaults["thermo2_S1"] / self._normalization["S1"]
                     )
                 )
-                self.epsilon.fill_(self._defaults["epsilon"])
 
     def _inverse_softplus(self, x, epsilon=1e-7):
         """
@@ -318,18 +321,18 @@ class StereoscopicAtmosphere(nn.Module):
             else:
                 target_raw.data.copy_(val_tensor / norm_val)
 
-        # 1. Global B (Stored in physical units directly)
+        # 1. Global B (Stored in normalized units)
         if "global_Blos" in params:
-            self.global_Blos.data.copy_(
-                torch.as_tensor(params["global_Blos"], device=self.device)
+            self.global_Blos_raw.data.copy_(
+                torch.as_tensor(params["global_Blos"], device=self.device) / self._normalization["global_Blos"]
             )
         if "global_Bn" in params:
-            self.global_Bn.data.copy_(
-                torch.as_tensor(params["global_Bn"], device=self.device)
+            self.global_Bn_raw.data.copy_(
+                torch.as_tensor(params["global_Bn"], device=self.device) / self._normalization["global_Bn"]
             )
         if "global_Bw" in params:
-            self.global_Bw.data.copy_(
-                torch.as_tensor(params["global_Bw"], device=self.device)
+            self.global_Bw_raw.data.copy_(
+                torch.as_tensor(params["global_Bw"], device=self.device) / self._normalization["global_Bw"]
             )
 
         # 2. Thermo1
@@ -350,9 +353,7 @@ class StereoscopicAtmosphere(nn.Module):
         set_param(self.thermo2_S0_raw, params.get("thermo2_S0"), self._normalization["S0"], is_softplus=True)
         set_param(self.thermo2_S1_raw, params.get("thermo2_S1"), self._normalization["S1"], is_softplus=True)
 
-        # 4. Calibration
-        if "epsilon" in params:
-            self.epsilon.data.copy_(torch.as_tensor(params["epsilon"], device=self.device))
+        # 4. (epsilon removed — owned by degradation operators)
 
     def clamp_parameters(self):
         """
@@ -400,16 +401,12 @@ class StereoscopicAtmosphere(nn.Module):
         clamp_linear(self.thermo2_vlos, "thermo2_vlos")
 
         # --- Global Magnetic Field (Cartesian) ---
-        lo, hi = self._clamp_bounds("global_Blos")
-        self.global_Blos.data.clamp_(lo, hi)
-        lo, hi = self._clamp_bounds("global_Bn")
-        self.global_Bn.data.clamp_(lo, hi)
-        lo, hi = self._clamp_bounds("global_Bw")
-        self.global_Bw.data.clamp_(lo, hi)
-
-        # --- Calibration ---
-        lo, hi = self._clamp_bounds("epsilon")
-        self.epsilon.data.clamp_(lo, hi)
+        lo, hi = self._clamp_bounds("global_Blos", self._normalization["global_Blos"])
+        self.global_Blos_raw.data.clamp_(lo, hi)
+        lo, hi = self._clamp_bounds("global_Bn", self._normalization["global_Bn"])
+        self.global_Bn_raw.data.clamp_(lo, hi)
+        lo, hi = self._clamp_bounds("global_Bw", self._normalization["global_Bw"])
+        self.global_Bw_raw.data.clamp_(lo, hi)
 
 
     def get_atmosphere(self, instrument_index: int) -> "ViewAtmosphere":
@@ -425,9 +422,9 @@ class StereoscopicAtmosphere(nn.Module):
 
     def set_global_B(self, Blos: np.ndarray, Bn: np.ndarray, Bw: np.ndarray):
         with torch.no_grad():
-            self.global_Blos.copy_(torch.from_numpy(Blos).to(self.device).float())
-            self.global_Bn.copy_(torch.from_numpy(Bn).to(self.device).float())
-            self.global_Bw.copy_(torch.from_numpy(Bw).to(self.device).float())
+            self.global_Blos_raw.copy_(torch.from_numpy(Blos).to(self.device).float() / self._normalization["global_Blos"])
+            self.global_Bn_raw.copy_(torch.from_numpy(Bn).to(self.device).float() / self._normalization["global_Bn"])
+            self.global_Bw_raw.copy_(torch.from_numpy(Bw).to(self.device).float() / self._normalization["global_Bw"])
 
     def to_stack(self) -> torch.Tensor:
         """
