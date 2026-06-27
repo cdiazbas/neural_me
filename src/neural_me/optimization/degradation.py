@@ -557,23 +557,29 @@ class ExtendedPSFOperator(DegradationOperator):
         super().__init__()
         if epsilon < 0.0 or epsilon > 1.0:
             raise ValueError("epsilon must be in [0, 1]")
+        if fwhm < 0.0:
+            raise ValueError("fwhm must be >= 0 (use 0.0 to disable PSF convolution)")
+        if fwhm == 0.0 and tune_fwhm:
+            raise ValueError("tune_fwhm=True requires fwhm > 0")
         self.mean_source = mean_source.lower()
         if self.mean_source not in ["post_psf", "pre_psf"]:
             raise ValueError("mean_source must be 'post_psf' or 'pre_psf'")
 
-        self.psf_kernel = PSFKernel(
-            fwhm=fwhm,
-            kernel_size=kernel_size,
-            model=model,
-            tune_fwhm=tune_fwhm,
-            verbose=False,
-        )
-        self.spatial_psf = SpatialPSFOperator(
-            kernel=self.psf_kernel,
-            method=method,
-            padding_mode=padding_mode,
-            verbose=False,
-        )
+        self._use_psf = fwhm > 0.0
+        if self._use_psf:
+            self.psf_kernel = PSFKernel(
+                fwhm=fwhm,
+                kernel_size=kernel_size,
+                model=model,
+                tune_fwhm=tune_fwhm,
+                verbose=False,
+            )
+            self.spatial_psf = SpatialPSFOperator(
+                kernel=self.psf_kernel,
+                method=method,
+                padding_mode=padding_mode,
+                verbose=False,
+            )
         self.mix_polarization_mean = mix_polarization_mean
 
         if tune_epsilon:
@@ -585,8 +591,8 @@ class ExtendedPSFOperator(DegradationOperator):
             self._epsilon_trainable = False
 
         print(
-            f"ExtendedPSFOperator initialized | model={model.lower()} | "
-            f"fwhm={fwhm:.4f} (tunable={tune_fwhm}) | "
+            f"ExtendedPSFOperator initialized | "
+            f"{'fwhm=' + f'{fwhm:.4f} (tunable=' + str(tune_fwhm) + ')' if self._use_psf else 'PSF=disabled (fwhm=0)'} | "
             f"epsilon={epsilon:.4f} (tunable={tune_epsilon}) | "
             f"mix_polarization_mean={mix_polarization_mean} | "
             f"mean_source={self.mean_source}"
@@ -598,7 +604,7 @@ class ExtendedPSFOperator(DegradationOperator):
         return self.fixed_epsilon.to(device=device, dtype=dtype)
 
     def clamp_parameters(self):
-        if hasattr(self.psf_kernel, "clamp_parameters"):
+        if self._use_psf and hasattr(self.psf_kernel, "clamp_parameters"):
             self.psf_kernel.clamp_parameters()
         if self._epsilon_trainable:
             self.raw_epsilon.data.clamp_(-12.0, 12.0)
@@ -606,9 +612,12 @@ class ExtendedPSFOperator(DegradationOperator):
     def forward(
         self, stokes: Tuple[torch.Tensor, ...], atmosphere: StereoscopicAtmosphere
     ) -> Tuple[torch.Tensor, ...]:
-        # First apply the core spatial PSF.
         I_in, Q_in, U_in, V_in = stokes
-        I_psf, Q_psf, U_psf, V_psf = self.spatial_psf(stokes, atmosphere)
+        # Apply spatial PSF if enabled, otherwise pass through.
+        if self._use_psf:
+            I_psf, Q_psf, U_psf, V_psf = self.spatial_psf(stokes, atmosphere)
+        else:
+            I_psf, Q_psf, U_psf, V_psf = I_in, Q_in, U_in, V_in
         epsilon = self._get_epsilon(device=I_psf.device, dtype=I_psf.dtype)
 
         # Flat FoV mean component: choose whether to compute mean from the
