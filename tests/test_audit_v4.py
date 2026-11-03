@@ -57,8 +57,8 @@ def _me_profile(line=6173, B=200.0, gamma_deg=60.0, xi_deg=30.0):
 #  High
 # --------------------------------------------------------------------- #
 
-@xfail("C01", "WFA transverse template uses 1/|lambda|, BtQ and BtU cancel to 0")
 def test_c01_wfa_recovers_transverse_field():
+    """C01 (fixed): the WFA must recover BtQ, BtU of a weak-field profile."""
     from neural_me.physics.wfa import wfa_initial_conditions
 
     wl, st = _me_profile()

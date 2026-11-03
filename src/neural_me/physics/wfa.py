@@ -94,9 +94,11 @@ def wfa_initial_conditions(
 
     # === Btrans from Stokes Q, U ===
     # Need to avoid line core where dI/dλ ~ 0
-    # Use scaling: scl = 1/|λ| for |λ| > vdop, else 0
+    # Use scaling: scl = 1/λ for |λ| > vdop, else 0.  Q and U go as
+    # (1/λ)·dI/dλ in the wings, so the template must keep the sign of λ.
     vdop = 0.035*4  # Typical Doppler width in Å
-    scl = np.where(np.abs(wavelengths) > vdop, 1.0 / (np.abs(wavelengths) + 1e-10), 0.0)
+    far = np.abs(wavelengths) > vdop
+    scl = np.where(far, 1.0 / np.where(far, wavelengths, 1.0), 0.0)
     dIdw_scl = dIdw_flat * scl
 
     # BtQ_sq and BtU_sq represent Btrans^2 * cos(2*xi) and Btrans^2 * sin(2*xi) respectively
