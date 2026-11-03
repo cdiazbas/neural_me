@@ -319,7 +319,10 @@ class StereoscopicAtmosphere(LocalVerticalMixin, nn.Module):
                 value_phys, device=self.device, dtype=torch.float32
             )
             if val_tensor.shape != target_raw.shape:
-                val_tensor = val_tensor.reshape(target_raw.shape)
+                if val_tensor.numel() == target_raw.numel():
+                    val_tensor = val_tensor.reshape(target_raw.shape)
+                else:  # e.g. one value for the whole grid
+                    val_tensor = torch.broadcast_to(val_tensor, target_raw.shape)
 
             if is_softplus:
                 target_raw.data.copy_(self._inverse_softplus(val_tensor / norm_val))

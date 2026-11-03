@@ -518,3 +518,13 @@ def test_c39_levmar_silent_when_converged():
         res = quiet(solver.solve, max_iter=200, verbose=False)
     assert res["n_active"] == 0
     assert not [w for w in caught if "max_iter" in str(w.message)]
+
+
+def test_c24_stereo_set_parameters_accepts_scalars():
+    """C24 (fixed): one value for the whole grid is broadcast, full arrays still work."""
+    from neural_me.core.atmospheres.stereoscopic import StereoscopicAtmosphere
+
+    atm = quiet(StereoscopicAtmosphere, grid_shape=(2, 3))
+    atm.set_parameters({"thermo1_eta0": 42.0, "thermo2_vlos": np.arange(6.0)})
+    assert torch.allclose(atm.get_atmosphere(1).eta0, torch.full((2, 3), 42.0), rtol=1e-4)
+    assert torch.allclose(atm.get_atmosphere(2).vlos.flatten(), torch.arange(6.0), atol=1e-5)
