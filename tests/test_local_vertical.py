@@ -333,5 +333,5 @@ def test_reinstalling_geometry_overwrites_buffer(hinode_sp_map):
     atm.set_local_vertical_geometry(
         np.broadcast_to(np.eye(3), grid_shape + (3, 3)).copy()
     )
-    assert len(dict(atm.named_buffers())) == 2
+    assert sorted(k for k in dict(atm.named_buffers()) if k.startswith("lv_")) == ["lv_on_disk", "lv_rotation"]
     assert not torch.allclose(first, atm.lv_rotation)
