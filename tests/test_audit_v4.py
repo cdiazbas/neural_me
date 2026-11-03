@@ -325,18 +325,34 @@ def test_c32_docstring_drift_quotes_gone():
     assert "less accurate than Humlicek" not in inspect.getsource(zeeman)
 
 
-@xfail("C17", "2D Lorentzian kernel shape depends on kernel_size")
-def test_c17_lorentzian_kernel_independent_of_support():
+def _psf_core_energy(model, size, fwhm=2.0, **kwargs):
     from neural_me.optimization.degradation import PSFKernel
 
-    def core_energy(size):
-        k = quiet(PSFKernel, model="lorentzian", fwhm=2.0, kernel_size=size, tune_fwhm=False)
-        kern = k().detach().squeeze()
-        c = size // 2
-        yy, xx = np.mgrid[:size, :size]
-        return float(kern[torch.from_numpy((yy - c) ** 2 + (xx - c) ** 2 <= 1)].sum())
+    k = quiet(PSFKernel, model=model, fwhm=fwhm, kernel_size=size, tune_fwhm=False, **kwargs)
+    kern = k().detach().squeeze()
+    c = size // 2
+    yy, xx = np.mgrid[:size, :size]
+    return float(kern[torch.from_numpy((yy - c) ** 2 + (xx - c) ** 2 <= 1)].sum()), kern
 
-    assert core_energy(31) == pytest.approx(core_energy(101), rel=0.05)
+
+def test_c17_moffat_kernel_independent_of_support():
+    """C17 (fixed, author's choice): the Moffat PSF is set by its FWHM, not kernel_size."""
+    assert _psf_core_energy("moffat", 31)[0] == pytest.approx(_psf_core_energy("moffat", 101)[0], rel=0.01)
+
+
+@pytest.mark.parametrize("beta", [1.5, 2.5, 4.0])
+def test_c17_moffat_fwhm_is_exact(beta):
+    """C17 (fixed): the Moffat kernel is at half maximum at r = FWHM / 2."""
+    _, k = _psf_core_energy("moffat", 31, fwhm=4.0, moffat_beta=beta)
+    assert float(k[15, 17] / k[15, 15]) == pytest.approx(0.5, abs=1e-5)
+
+
+def test_c17_lorentzian_warns_about_support():
+    """C17 (fixed): choosing the non-normalisable 2-D Lorentzian warns."""
+    from neural_me.optimization.degradation import PSFKernel
+
+    with pytest.warns(UserWarning, match="not normalisable"):
+        quiet(PSFKernel, model="lorentzian", fwhm=2.0, kernel_size=31, tune_fwhm=False)
 
 
 def test_c18_cog_recovers_transverse_field():

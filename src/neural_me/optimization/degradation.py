@@ -1,4 +1,5 @@
 import math
+import warnings
 from abc import ABC, abstractmethod
 from typing import Tuple, Optional, Union
 import torch
@@ -80,7 +81,13 @@ class PSFKernel(nn.Module):
 
     Supported models:
     - gaussian
-    - lorentzian (also accepts legacy spelling 'lorenztian')
+    - moffat: ``(1 + r^2 / alpha^2)^-beta`` with ``beta = moffat_beta`` (> 1);
+      Lorentzian-like wings that still integrate to a finite value, so the
+      shape is set by the FWHM, not by ``kernel_size``.
+    - lorentzian (also accepts legacy spelling 'lorenztian'): a 2-D
+      Lorentzian does not integrate to a finite value, so after normalising
+      on the ``kernel_size`` support its shape depends on that support.
+      Kept for compatibility; prefer 'moffat'.
     """
 
     def __init__(
@@ -90,6 +97,7 @@ class PSFKernel(nn.Module):
         model: str = "gaussian",
         tune_fwhm: bool = True,
         verbose: bool = True,
+        moffat_beta: float = 2.5,
     ):
         super().__init__()
         if fwhm <= 0.0:
@@ -100,8 +108,17 @@ class PSFKernel(nn.Module):
         model_norm = model.lower()
         if model_norm == "lorenztian":
             model_norm = "lorentzian"
-        if model_norm not in ["gaussian", "lorentzian"]:
-            raise ValueError("model must be 'Gaussian' or 'Lorentzian'")
+        if model_norm not in ["gaussian", "lorentzian", "moffat"]:
+            raise ValueError("model must be 'gaussian', 'moffat' or 'lorentzian'")
+        if model_norm == "moffat" and moffat_beta <= 1.0:
+            raise ValueError("moffat_beta must be > 1 for a normalisable PSF")
+        if model_norm == "lorentzian":
+            warnings.warn(
+                "PSFKernel(model='lorentzian'): a 2-D Lorentzian is not normalisable, "
+                "so the kernel shape depends on kernel_size; use model='moffat'.",
+                stacklevel=2,
+            )
+        self.moffat_beta = float(moffat_beta)
 
         self.kernel_size = int(kernel_size)
         self.model = model_norm
@@ -139,6 +156,10 @@ class PSFKernel(nn.Module):
         if self.model == "gaussian":
             sigma = fwhm / (2.0 * torch.sqrt(torch.tensor(2.0 * torch.log(torch.tensor(2.0)), device=device, dtype=dtype)))
             kernel2d = torch.exp(-0.5 * rr2 / (sigma**2))
+        elif self.model == "moffat":
+            beta = self.moffat_beta
+            alpha = fwhm / (2.0 * math.sqrt(2.0 ** (1.0 / beta) - 1.0))
+            kernel2d = (1.0 + rr2 / (alpha**2)) ** (-beta)
         else:
             gamma = fwhm / 2.0
             kernel2d = 1.0 / (1.0 + rr2 / (gamma**2))
@@ -572,6 +593,7 @@ class ExtendedPSFOperator(DegradationOperator):
         padding_mode: str = "reflect",
         mix_polarization_mean: bool = True,
         mean_source: str = "pre_psf",
+        moffat_beta: float = 2.5,
     ):
         super().__init__()
         if epsilon < 0.0 or epsilon > 1.0:
@@ -592,6 +614,7 @@ class ExtendedPSFOperator(DegradationOperator):
                 model=model,
                 tune_fwhm=tune_fwhm,
                 verbose=False,
+                moffat_beta=moffat_beta,
             )
             self.spatial_psf = SpatialPSFOperator(
                 kernel=self.psf_kernel,
