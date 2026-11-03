@@ -96,7 +96,9 @@ def wfa_initial_conditions(
     # Need to avoid line core where dI/dλ ~ 0
     # Use scaling: scl = 1/λ for |λ| > vdop, else 0.  Q and U go as
     # (1/λ)·dI/dλ in the wings, so the template must keep the sign of λ.
-    vdop = 0.035*4  # Typical Doppler width in Å
+    # Core half-width excluded: lambda0 * 6.8 km/s / c, i.e. 0.14 Å at 6173 Å,
+    # scaled with the line like the Doppler width.
+    vdop = line.cw * 6.8 / 2.99792458e5
     far = np.abs(wavelengths) > vdop
     scl = np.where(far, 1.0 / np.where(far, wavelengths, 1.0), 0.0)
     dIdw_scl = dIdw_flat * scl

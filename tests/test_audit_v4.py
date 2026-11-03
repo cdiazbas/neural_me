@@ -723,3 +723,25 @@ def test_c30_doppler_shift_uses_exact_speed_of_light(vlos):
     I0 = me(p0, wl.expand(1, -1))[0]
     Iv = me(pv, (wl + shift).expand(1, -1))[0]
     assert (Iv - I0).abs().max() < 1e-12
+
+
+def test_c31_wfa_core_exclusion_scales_with_the_line():
+    """C31 (fixed): the WFA azimuth on 15648 Å is as good as on the visible lines."""
+    from neural_me.physics.milne_eddington import MilneEddington
+    from neural_me.physics.wfa import wfa_initial_conditions
+    from neural_me.physics.lineas import get_line
+
+    lid = 6  # Fe I 15648.5, g_eff = 3
+    sc = get_line(lid).cw / 6173.3356
+    me = quiet(MilneEddington, line=lid)
+    wl = torch.linspace(-0.6 * sc, 0.6 * sc, 241, dtype=torch.float64)
+    rng = np.random.default_rng(0)
+    chi_err = []
+    for _ in range(20):
+        B, g, x = rng.uniform(50, 250), rng.uniform(0.4, 2.7), rng.uniform(0, np.pi)
+        p = torch.tensor([[B, g, x, 0.0, 10.0, 0.2, 0.035 * sc, 0.2, 0.8]], dtype=torch.float64)
+        st = torch.stack(me(p, wl.expand(1, -1)), 1).detach().numpy()
+        _, bq, bu = (float(np.ravel(a)[0]) for a in wfa_initial_conditions(wl.numpy(), st, line_id=lid)[:3])
+        d = abs(np.degrees(0.5 * np.arctan2(bu, bq)) - np.degrees(x)) % 180
+        chi_err.append(min(d, 180 - d))
+    assert np.median(chi_err) < 1.0
