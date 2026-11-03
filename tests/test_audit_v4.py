@@ -706,3 +706,20 @@ def test_c12_spectral_psf_is_a_true_convolution():
     out = quiet(SpectralPSFOperator, k)((x,) * 4, types.SimpleNamespace(grid_shape=(1,)))[0][0]
     ref = convolve(x[0].numpy(), (k / k.sum()).numpy(), mode="same")
     assert np.allclose(out.numpy(), ref, atol=1e-12)
+
+
+@pytest.mark.parametrize("vlos", [5.0, 12.0])
+def test_c30_doppler_shift_uses_exact_speed_of_light(vlos):
+    """C30 (fixed): a profile at vlos is the rest profile shifted by lambda0 vlos / c exactly."""
+    from neural_me.physics.milne_eddington import MilneEddington
+    from neural_me.physics.lineas import get_line
+
+    me = quiet(MilneEddington, line=6302)
+    shift = get_line(2).cw * vlos / 2.99792458e5
+    wl = torch.linspace(-0.6, 0.6, 400, dtype=torch.float64)
+    p0 = torch.tensor([[0.0, 1.0, 0.0, 0.0, 10.0, 0.2, 0.03, 0.2, 0.8]], dtype=torch.float64)
+    pv = p0.clone()
+    pv[0, 3] = vlos
+    I0 = me(p0, wl.expand(1, -1))[0]
+    Iv = me(pv, (wl + shift).expand(1, -1))[0]
+    assert (Iv - I0).abs().max() < 1e-12

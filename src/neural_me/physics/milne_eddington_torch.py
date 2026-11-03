@@ -155,7 +155,7 @@ class MilneEddingtonTorch(nn.Module):
 
         # Lorentz splitting [Å] and velocity shift [Å]
         lB = 4.67e-13 * l0**2.0 * B  # (batch, 1)
-        cc = 3.0e5  # speed of light [km/s]
+        cc = 2.99792458e5  # speed of light [km/s], as in pyMilne (phyc::CC)
         vlosA = l0 * vlos / cc  # Doppler shift in Å (batch, 1)
 
         # Apply Lorentz factor to component splittings
