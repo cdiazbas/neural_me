@@ -26,6 +26,7 @@ def MilneEddington(line=None, backend="torch", compile=False, nlinea=None, **kwa
             - precision: 'float32' or 'float64' (default: 'float64')
         **kwargs: Additional arguments for Torch backend:
             - checkpoint_gradients: If True, use gradient checkpointing (default: False)
+            - mu: only 1.0 is supported (ValueError otherwise)
 
     Returns:
         MilneEddingtonTorch or MilneEddingtonCpp instance
@@ -46,6 +47,12 @@ def MilneEddington(line=None, backend="torch", compile=False, nlinea=None, **kwa
     nlinea = line
     if backend == "torch":
         from .milne_eddington_torch import MilneEddingtonTorch
+
+        if kwargs.get("mu", 1.0) != 1.0:
+            raise ValueError(
+                "The torch backend synthesises at disc centre only (mu = 1); "
+                f"got mu={kwargs['mu']}. Use backend='cpp' for mu != 1."
+            )
 
         checkpoint_gradients = kwargs.get("checkpoint_gradients", False)
         return MilneEddingtonTorch(

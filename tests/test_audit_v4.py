@@ -267,11 +267,13 @@ def test_c13_cpp_line_table_consistent():
     assert "6173.334" not in code_only(cppmod).replace(" ", "")
 
 
-@xfail("C14", "torch backend ignores mu")
-def test_c14_torch_backend_uses_mu():
-    from neural_me.physics import milne_eddington_torch as mt
+def test_c14_torch_backend_rejects_mu():
+    """C14 (fixed): the torch backend refuses mu != 1 instead of ignoring it."""
+    from neural_me.physics.milne_eddington import MilneEddington
 
-    assert re.search(r"\bmu\b", code_only(mt))
+    with pytest.raises(ValueError, match="mu = 1"):
+        quiet(MilneEddington, line=6302, backend="torch", mu=0.5)
+    quiet(MilneEddington, line=6302, backend="torch", mu=1.0)
 
 
 @xfail("C15", "LocalVerticalMixin registers its buffers lazily")
