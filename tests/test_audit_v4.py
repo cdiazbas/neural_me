@@ -114,12 +114,32 @@ def test_c03_pixel_solver_wfa_init_moves_B():
     assert not torch.allclose(ps.atmosphere.B.detach(), b0)
 
 
-@xfail("C04", "LevMarSolver keeps one scalar lambda and one accept/reject for all pixels")
-def test_c04_levmar_lambda_is_per_pixel():
-    from neural_me.optimization.levmar_solver import LevMarSolver
+def test_c04_levmar_per_pixel_lambda_beats_global():
+    """C04 (fixed): per-pixel lambda/accept must fit a heterogeneous map better than one global lambda."""
+    from neural_me.core import MEProblem
+    from neural_me.core.observation import Observation
+    from neural_me.core.atmospheres import SphericalSoftplusAtmosphere
+    from neural_me.optimization import LevMarSolver
 
-    src = code_only(LevMarSolver.solve)
-    assert not re.search(r"^\s*lam\s*=\s*check_lambda\(", src, re.M)
+    n, nw = 8, 40
+    g = torch.Generator().manual_seed(0)
+    wl = torch.linspace(-0.4, 0.4, nw)
+    lo = torch.tensor([100.0, 0.2, 0.1, -2.0, 3.0, 0.05, 0.02, 0.1, 0.5])
+    hi = torch.tensor([2000.0, 2.9, 3.0, 2.0, 40.0, 0.6, 0.045, 0.3, 0.9])
+    truth = lo + (hi - lo) * torch.rand(n * n, 9, generator=g)
+    p0 = quiet(MEProblem, Observation(torch.zeros(n, n, 4, nw), wl),
+               line=6302, backend="torch", compile=False)
+    data = torch.stack(p0.model(truth, wl.expand(n * n, -1)), 1).reshape(n, n, 4, nw).detach()
+    data = data + 1e-3 * torch.randn(data.shape, generator=g)
+
+    chi2 = {}
+    for per_pixel in (False, True):
+        prob = quiet(MEProblem, Observation(data, wl), line=6302, backend="torch", compile=False)
+        atm = quiet(SphericalSoftplusAtmosphere, grid_shape=(n, n))
+        solver = quiet(LevMarSolver, prob, atmosphere=atm)
+        solver.set_weights(1e-3, 1e-3, 1e-3, 1e-3)
+        chi2[per_pixel] = quiet(solver.solve, max_iter=60, verbose=False, per_pixel=per_pixel)["chi2"]
+    assert chi2[True] < 0.5 * chi2[False]
 
 
 # --------------------------------------------------------------------- #

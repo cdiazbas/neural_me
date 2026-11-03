@@ -302,7 +302,7 @@ class LevMarSolver:
         self,
         J: torch.Tensor,
         r: torch.Tensor,
-        lam: float,
+        lam,
     ) -> torch.Tensor:
         """
         Solve the LM normal equations for parameter correction.
@@ -316,7 +316,7 @@ class LevMarSolver:
         Args:
             J: (n_pixels, 9, n_dat) sigma-weighted Jacobian
             r: (n_pixels, n_dat) sigma-weighted residuals
-            lam: current lambda
+            lam: current lambda, a float or a (n_pixels,) tensor
 
         Returns:
             delta: (n_pixels, 9) parameter correction
@@ -331,7 +331,10 @@ class LevMarSolver:
 
         # Diagonal damping: A[i,i] *= (1 + lambda)
         diag_idx = torch.arange(n_par, device=J.device)
-        A[:, diag_idx, diag_idx] *= 1.0 + lam
+        if torch.is_tensor(lam):
+            A[:, diag_idx, diag_idx] *= (1.0 + lam).unsqueeze(-1)
+        else:
+            A[:, diag_idx, diag_idx] *= 1.0 + lam
 
         # Solve A * delta = B
         try:
@@ -455,6 +458,7 @@ class LevMarSolver:
         max_rejects: int = 6,  # Max consecutive rejects before stopping
         recompute_jacobian_after: int = 4,  # Recompute J after N rejects
         verbose: bool = True,
+        per_pixel: bool = True,
     ) -> Dict:
         """
         Run the Levenberg-Marquardt inversion.
@@ -478,8 +482,13 @@ class LevMarSolver:
                 because Chi2 then has no absolute scale.
             fx_threshold: Stop if relative Chi2 improvement < this for 2 iters.
             max_rejects: Max consecutive rejected steps before stopping.
-            recompute_jacobian_after: Recompute Jacobian after N consecutive rejections.
+            recompute_jacobian_after: Recompute Jacobian after N consecutive
+                rejections (``per_pixel=False`` only).
             verbose: Print iteration info.
+            per_pixel: Give every pixel its own lambda, accept/reject and
+                stopping criteria, as pyMilne's fitData does (default). With
+                False, one lambda and one accept/reject on the mean Chi2 are
+                shared by the whole map (behaviour before 2026-11).
 
         Returns:
             Dictionary with convergence diagnostics.
@@ -502,6 +511,16 @@ class LevMarSolver:
                 stacklevel=2,
             )
             chi2_threshold = 0.0
+
+        if per_pixel:
+            return self._solve_per_pixel(
+                max_iter=max_iter,
+                init_lambda=init_lambda,
+                chi2_threshold=chi2_threshold,
+                fx_threshold=fx_threshold,
+                max_rejects=max_rejects,
+                verbose=verbose,
+            )
 
         # --- Initial parameters --- #
         self.atmosphere.clamp_parameters()
@@ -688,6 +707,131 @@ class LevMarSolver:
             "l1_history": self.l1_history,
             "lambda_history": self.lambda_history,
             "n_iterations": it + 1,
+        }
+
+    def _solve_per_pixel(
+        self,
+        max_iter: int,
+        init_lambda: float,
+        chi2_threshold: float,
+        fx_threshold: float,
+        max_rejects: int,
+        verbose: bool,
+    ) -> Dict:
+        """LM with a lambda, an accept/reject and stopping criteria per pixel.
+
+        Each pixel follows pyMilne's fitData: an accepted step divides its
+        lambda by sqrt(10) and moves its Jacobian to the new point; a rejected
+        step multiplies its lambda by 10.  A pixel stops after ``max_rejects``
+        consecutive rejections, after two accepted steps whose relative Chi2
+        gain is below ``fx_threshold``, or once its Chi2 is below
+        ``chi2_threshold``.  The solve ends when every pixel has stopped.
+        """
+        fac_lam = 3.1622776601683795  # sqrt(10)
+        max_lam = 100.0 * fac_lam
+        min_lam = 1e-4
+
+        self.atmosphere.clamp_parameters()
+        best_params = self._params_from_atmosphere()  # (n_pixels, 9)
+        n_pix = best_params.shape[0]
+        dev = best_params.device
+
+        if verbose:
+            print(
+                f"LevMarSolver: {self.n_pixels} pixels, "
+                f"{self._n_dat} data points/pixel, 9 parameters, per-pixel lambda"
+            )
+            print(f"  init_lambda={init_lambda:.4f}, max_iter={max_iter}")
+
+        t0_total = time.time()
+        sigma_inv = 1.0 / self._sigma.unsqueeze(0)
+
+        syn, J = self._forward_and_jacobian(best_params)
+        J_w = J * sigma_inv.unsqueeze(1)
+        r = self._compute_residuals(self._obs_flat, syn)
+        chi2 = self._compute_chi2(r)
+
+        lam = torch.full((n_pix,), float(init_lambda), device=dev, dtype=chi2.dtype)
+        lam = lam.clamp(min_lam, max_lam)
+        n_rej = torch.zeros(n_pix, dtype=torch.long, device=dev)
+        too_small = torch.zeros(n_pix, dtype=torch.bool, device=dev)
+        active = chi2 >= chi2_threshold
+
+        self.chi2_history.append(chi2.mean().item())
+        self.l1_history.append(self._compute_l1_loss(self._obs_flat, syn))
+        self.lambda_history.append(lam.median().item())
+
+        if verbose:
+            print(f"  [Init] mean Chi2={self.chi2_history[-1]:.5f}, dt={time.time() - t0_total:.2f}s")
+
+        iterator = trange(max_iter, desc="LM", leave=True) if verbose else range(max_iter)
+        it = -1
+        for it in iterator:
+            if not bool(active.any()):
+                break
+
+            delta = self._solve_lm_step(J_w, r, lam)
+            delta = torch.where(active.unsqueeze(-1), delta, torch.zeros_like(delta))
+
+            self._params_to_atmosphere(best_params + delta)
+            self.atmosphere.clamp_parameters()
+            trial_params = self._params_from_atmosphere()
+
+            # One call gives the trial Chi2 and, where accepted, the next Jacobian.
+            trial_syn, trial_J = self._forward_and_jacobian(trial_params)
+            trial_r = self._compute_residuals(self._obs_flat, trial_syn)
+            trial_chi2 = self._compute_chi2(trial_r)
+
+            acc = active & (trial_chi2 < chi2)
+            rej = active & ~acc
+
+            dfx = (chi2 - trial_chi2) / chi2.clamp_min(torch.finfo(chi2.dtype).tiny)
+            small = acc & (dfx < fx_threshold)
+            quit_px = small & too_small
+            too_small = too_small | small
+
+            best_params = torch.where(acc.unsqueeze(-1), trial_params, best_params)
+            chi2 = torch.where(acc, trial_chi2, chi2)
+            r = torch.where(acc.unsqueeze(-1), trial_r, r)
+            syn = torch.where(acc.unsqueeze(-1), trial_syn, syn)
+            J_w = torch.where(acc.view(-1, 1, 1), trial_J * sigma_inv.unsqueeze(1), J_w)
+
+            lam_down = torch.where(lam > 1.0001 * min_lam, (lam / fac_lam).clamp(min_lam, max_lam),
+                                   torch.full_like(lam, 10 * min_lam))
+            lam = torch.where(acc, lam_down, lam)
+            lam = torch.where(rej, (lam * fac_lam**2).clamp(min_lam, max_lam), lam)
+            n_rej = torch.where(acc, torch.zeros_like(n_rej), n_rej + rej.long())
+
+            active = active & ~quit_px & (n_rej < max_rejects) & (chi2 >= chi2_threshold)
+
+            self.chi2_history.append(chi2.mean().item())
+            self.l1_history.append(self._compute_l1_loss(self._obs_flat, syn))
+            self.lambda_history.append(lam.median().item())
+
+            if verbose:
+                iterator.set_postfix(
+                    {
+                        "Chi2": f"{self.chi2_history[-1]:.5f}",
+                        "acc": int(acc.sum()),
+                        "active": int(active.sum()),
+                    }
+                )
+
+        self._params_to_atmosphere(best_params)
+        self.atmosphere.clamp_parameters()
+
+        best_chi2 = chi2.mean().item()
+        if verbose:
+            print(f"  Final: mean Chi2={best_chi2:.5f}, "
+                  f"still active={int(active.sum())}/{n_pix}, total={time.time() - t0_total:.1f}s")
+
+        return {
+            "chi2": best_chi2,
+            "chi2_history": self.chi2_history,
+            "l1_history": self.l1_history,
+            "lambda_history": self.lambda_history,
+            "n_iterations": it + 1,
+            "n_active": int(active.sum()),
         }
 
     def get_atmosphere(self) -> Atmosphere:
