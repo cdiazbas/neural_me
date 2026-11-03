@@ -338,8 +338,12 @@ class SlicedAtmosphere(Atmosphere):
     A lightweight view into another Atmosphere, filtered by indices.
 
     This class delegates all property access to the parent Atmosphere,
-    applying the stored indices.
+    applying the stored indices to the flattened pixel axis, the layout of
+    ``Observation`` data, so a 2-D grid is indexed by pixel, not by row.
     """
+
+    def _take(self, values: torch.Tensor) -> torch.Tensor:
+        return values.reshape(-1)[self.indices]
 
     def __init__(self, parent: Atmosphere, indices):
         super().__init__()
@@ -351,36 +355,36 @@ class SlicedAtmosphere(Atmosphere):
 
     @property
     def B(self) -> torch.Tensor:
-        return self.parent.B[self.indices]
+        return self._take(self.parent.B)
 
     @property
     def gamma(self) -> torch.Tensor:
-        return self.parent.gamma[self.indices]
+        return self._take(self.parent.gamma)
 
     @property
     def xi(self) -> torch.Tensor:
-        return self.parent.xi[self.indices]
+        return self._take(self.parent.xi)
 
     @property
     def vlos(self) -> torch.Tensor:
-        return self.parent.vlos[self.indices]
+        return self._take(self.parent.vlos)
 
     @property
     def eta0(self) -> torch.Tensor:
-        return self.parent.eta0[self.indices]
+        return self._take(self.parent.eta0)
 
     @property
     def a(self) -> torch.Tensor:
-        return self.parent.a[self.indices]
+        return self._take(self.parent.a)
 
     @property
     def ddop(self) -> torch.Tensor:
-        return self.parent.ddop[self.indices]
+        return self._take(self.parent.ddop)
 
     @property
     def S0(self) -> torch.Tensor:
-        return self.parent.S0[self.indices]
+        return self._take(self.parent.S0)
 
     @property
     def S1(self) -> torch.Tensor:
-        return self.parent.S1[self.indices]
+        return self._take(self.parent.S1)

@@ -399,12 +399,27 @@ def test_c22_cartesian_xi_gradient_finite_scale():
     assert g < 1e6
 
 
-@xfail("C23", "SlicedAtmosphere indexes rows of a 2-D grid, not pixels")
 def test_c23_sliced_atmosphere_flat_indices():
+    """C23 (fixed): slicing a 2-D atmosphere picks pixels, matching Observation's flat layout."""
     from neural_me.core.atmospheres import SphericalAtmosphere
 
     atm = quiet(SphericalAtmosphere, grid_shape=(8, 8))
-    assert atm[[0, 1, 2]].B.numel() == 3
+    idx = torch.tensor([0, 9, 63])
+    assert torch.equal(atm[idx].B, atm.B.reshape(-1)[idx])
+
+
+def test_c23_compute_loss_with_indices_on_2d_grid():
+    """C23 (fixed): MEProblem.compute_loss(indices=...) works on a 2-D grid."""
+    from neural_me.core import MEProblem
+    from neural_me.core.observation import Observation
+    from neural_me.core.atmospheres import SphericalAtmosphere
+
+    wl = torch.linspace(-0.4, 0.4, 20)
+    prob = quiet(MEProblem, Observation(torch.rand(4, 4, 4, 20), wl), line=6302,
+                 backend="torch", compile=False)
+    atm = quiet(SphericalAtmosphere, grid_shape=(4, 4))
+    loss = prob.compute_loss(atm, indices=torch.tensor([0, 5, 15]))
+    assert torch.isfinite(loss)
 
 
 # --------------------------------------------------------------------- #
