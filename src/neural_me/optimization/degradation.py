@@ -310,9 +310,14 @@ class SpectralPSFOperator(DegradationOperator):
         kernel = self.kernel.to(dtype=stokes[0].dtype, device=stokes[0].device)
         if self.normalize_kernel:
             kernel = kernel / kernel.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        # Convolve (conv1d is a cross-correlation, so flip the kernel) and extend
+        # the band edges with their last value instead of zeros, which would
+        # darken the continuum there.
+        kernel = torch.flip(kernel, (-1,))
         for S in stokes:
             # Reshape to (N_pixels, 1, n_lambda) for 1D convolution along wavelengths
-            S_conv = F.conv1d(S.unsqueeze(1), kernel, padding=self.padding)
+            S_pad = F.pad(S.unsqueeze(1), (self.padding, self.padding), mode="replicate")
+            S_conv = F.conv1d(S_pad, kernel, padding=0)
             out.append(S_conv.squeeze(1))
         return tuple(out)
 

@@ -226,8 +226,8 @@ def test_c10_voigt_keeps_float64():
     assert H.dtype == torch.float64 and F.dtype == torch.float64
 
 
-@xfail("C11", "conv2d PSF path is cross-correlation, FFT path is convolution")
 def test_c11_psf_paths_agree_for_asymmetric_kernel():
+    """C11 (fixed): conv2d and FFT paths both convolve."""
     from neural_me.optimization.degradation import SpatialPSFOperator
 
     atm = types.SimpleNamespace(grid_shape=(16, 20))
@@ -240,8 +240,8 @@ def test_c11_psf_paths_agree_for_asymmetric_kernel():
     assert torch.allclose(a, b, atol=1e-5)
 
 
-@xfail("C12", "spectral PSF zero-pads the wavelength axis")
 def test_c12_spectral_psf_preserves_flat_continuum():
+    """C12 (fixed): the spectral PSF keeps a flat continuum flat to the band edges."""
     from neural_me.optimization.degradation import SpectralPSFOperator
 
     atm = types.SimpleNamespace(grid_shape=(2,))
@@ -674,3 +674,35 @@ def test_c26_hui_faraday_slope_at_line_centre(a):
     fd = (fvoigt(damp, torch.tensor([h], dtype=torch.float64))[1]
           - fvoigt(damp, torch.tensor([-h], dtype=torch.float64))[1]) / (2 * h)
     assert float(v.grad) == pytest.approx(float(fd), rel=1e-6)
+
+
+def test_c11_spatial_psf_is_a_true_convolution():
+    """C11 (fixed): both paths equal scipy.signal.convolve2d for an asymmetric PSF."""
+    from scipy.signal import convolve2d
+    from neural_me.optimization.degradation import SpatialPSFOperator
+
+    ny, nx = 24, 30
+    atm = types.SimpleNamespace(grid_shape=(ny, nx))
+    g = torch.Generator().manual_seed(0)
+    img = torch.rand(ny, nx, dtype=torch.float64, generator=g)
+    k = torch.rand(5, 5, dtype=torch.float64, generator=g)
+    k[0, 0] = 5.0
+    k = k / k.sum()
+    ref = convolve2d(img.numpy(), k.numpy(), mode="same")[2:-2, 2:-2]
+    for method in ("fft", "conv2d"):
+        op = quiet(SpatialPSFOperator, k, method=method, verbose=False, padding_mode="replicate")
+        out = op((img.reshape(-1, 1),) * 4, atm)[0].reshape(ny, nx).numpy()[2:-2, 2:-2]
+        assert np.allclose(out, ref, atol=1e-12)
+
+
+def test_c12_spectral_psf_is_a_true_convolution():
+    """C12 (fixed): an asymmetric spectral kernel gives numpy.convolve's response."""
+    from scipy.signal import convolve
+    from neural_me.optimization.degradation import SpectralPSFOperator
+
+    x = torch.zeros(1, 21, dtype=torch.float64)
+    x[0, 10] = 1.0
+    k = torch.tensor([1.0, 4.0, 2.0], dtype=torch.float64)
+    out = quiet(SpectralPSFOperator, k)((x,) * 4, types.SimpleNamespace(grid_shape=(1,)))[0][0]
+    ref = convolve(x[0].numpy(), (k / k.sum()).numpy(), mode="same")
+    assert np.allclose(out.numpy(), ref, atol=1e-12)
