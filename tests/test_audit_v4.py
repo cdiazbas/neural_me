@@ -573,3 +573,58 @@ def test_c25_even_kernels_rejected_where_unsupported():
     quiet(SpatialPSFOperator, torch.ones(4, 4), method="fft", verbose=False)
     quiet(SpatialPSFOperator, torch.ones(5, 5), method="conv2d", verbose=False)
     quiet(SpectralPSFOperator, torch.ones(5))
+
+
+def test_c27_levmar_l1_history_matches_meproblem():
+    """C27 (fixed): LevMarSolver's L1 diagnostic equals MEProblem's L1 loss."""
+    from neural_me.core.atmospheres import SphericalSoftplusAtmosphere
+    from neural_me.optimization import LevMarSolver
+
+    prob, data, wl, truth = _lm_synthetic()
+    prob.loss_type = "l1"
+    atm = quiet(SphericalSoftplusAtmosphere, grid_shape=data.shape[:2])
+    solver = quiet(LevMarSolver, prob, atmosphere=atm)
+    p = solver._params_from_atmosphere()
+    syn = solver._forward_only(p)
+    lm_l1 = solver._compute_l1_loss(solver._obs_flat, syn)
+    assert lm_l1 == pytest.approx(float(prob.compute_loss(atm)), rel=1e-5)
+
+
+def test_c28_levmar_global_jacobians_only_after_accepted_steps():
+    """C28 (fixed): the global LM computes one Jacobian at the start and one per accepted step."""
+    from neural_me.core.atmospheres import SphericalSoftplusAtmosphere
+    from neural_me.optimization import LevMarSolver
+
+    prob, data, wl, truth = _lm_synthetic()
+    atm = quiet(SphericalSoftplusAtmosphere, grid_shape=data.shape[:2])
+    solver = quiet(LevMarSolver, prob, atmosphere=atm)
+    solver.set_weights(1e-3, 1e-3, 1e-3, 1e-3)
+    calls = {"n": 0}
+    orig = solver._forward_and_jacobian
+
+    def counted(params):
+        calls["n"] += 1
+        return orig(params)
+
+    solver._forward_and_jacobian = counted
+    quiet(solver.solve, max_iter=40, verbose=False, per_pixel=False, recompute_jacobian_after=1)
+    h = solver.chi2_history
+    accepted = sum(1 for a, b in zip(h, h[1:]) if b < a)
+    assert calls["n"] == 1 + accepted
+
+
+def test_c29_cpp_warns_when_vlos_is_clipped():
+    """C29 (fixed): the cpp backend warns when |vlos| exceeds pyMilne's 13 km/s clip."""
+    import warnings as _w
+    from neural_me.physics.milne_eddington import MilneEddington
+
+    wl = torch.linspace(-1.0, 1.0, 50, dtype=torch.float64)
+    me = quiet(MilneEddington, line=6302, backend="cpp", lambda_axis=wl)
+    p = torch.tensor([[500.0, 1.0, 0.5, 16.0, 10.0, 0.2, 0.03, 0.2, 0.8]], dtype=torch.float64)
+    with pytest.warns(UserWarning, match="clipped"):
+        quiet(me, p, wl)
+    p[0, 3] = 12.0
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        quiet(me, p, wl)
+    assert not [w for w in caught if "clipped" in str(w.message)]

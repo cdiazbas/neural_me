@@ -1,3 +1,5 @@
+import warnings
+
 import torch
 from . import MilneEddington as ME
 import numpy as np
@@ -11,6 +13,8 @@ _last_response_functions = None
 
 # Lines hard-coded in pyMilne's MilneEddington.pyLines (vendored, not tracked).
 CPP_LINES = (6301, 6302, 6173)
+# pyMilne clips the line-of-sight velocity to this value [km/s].
+VLOS_LIMIT = 13.0
 
 class MILNE_function(torch.autograd.Function):
     """
@@ -66,6 +70,13 @@ class MILNE_function(torch.autograd.Function):
         model[0, :, 2] = np_xi
 
         model[0, :, 3] = vlos.detach().cpu().numpy()[:, 0]
+        if np.abs(model[0, :, 3]).max() > VLOS_LIMIT:
+            warnings.warn(
+                f"cpp backend: |vlos| > {VLOS_LIMIT} km/s is clipped by pyMilne; the "
+                "profiles and gradients of those pixels saturate. Use backend='torch' "
+                "for faster flows.",
+                stacklevel=2,
+            )
         model[0, :, 4] = ddop.detach().cpu().numpy()[:, 0]
 
         # Normalize eta0 and apply damping positivity
