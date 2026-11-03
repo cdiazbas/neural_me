@@ -51,20 +51,18 @@ class StereoscopicAtmosphere(LocalVerticalMixin, nn.Module):
         """
         super().__init__()
         self.grid_shape = grid_shape
-        self.device = device or torch.device("cpu")
+        self._init_device = device or torch.device("cpu")
         self._normalization = self.DEFAULT_NORMALIZATION.copy()
         self._defaults = self.DEFAULT_PARAMETERS.copy()
 
-        # Geometry constants
-        self.gamma_rad = torch.tensor(
-            np.radians(gamma), device=self.device, dtype=torch.float32
-        )
-        self.beta_rad = torch.tensor(
-            np.radians(beta), device=self.device, dtype=torch.float32
-        )
-        self.delta_rad = torch.tensor(
-            np.radians(delta), device=self.device, dtype=torch.float32
-        )
+        # Geometry constants: non-persistent buffers, so they follow .to()
+        # without changing the state_dict of existing checkpoints.
+        for name, deg in (("gamma_rad", gamma), ("beta_rad", beta), ("delta_rad", delta)):
+            self.register_buffer(
+                name,
+                torch.tensor(np.radians(deg), device=self.device, dtype=torch.float32),
+                persistent=False,
+            )
 
         # --- 1. Global Magnetic Field (Cartesian) ---
         # Initialized with noise to avoid 0-gradient singularity
@@ -192,6 +190,12 @@ class StereoscopicAtmosphere(LocalVerticalMixin, nn.Module):
         )
 
         print(f"StereoscopicAtmosphere initialized | Grid: {self.grid_shape} | γ={gamma:.1f}°, β={beta:.1f}°, δ={delta:.1f}°")
+
+    @property
+    def device(self) -> torch.device:
+        """Device of the parameters (follows ``.to()``)."""
+        p = next(self.parameters(), None)
+        return p.device if p is not None else self._init_device
 
     @property
     def normalization(self):
@@ -488,8 +492,11 @@ class ViewAtmosphere(Atmosphere):
         super().__init__()
         self.parent = parent
         self.index = index
-        self.device = parent.device
         self.grid_shape = parent.grid_shape
+
+    @property
+    def device(self) -> torch.device:
+        return self.parent.device
 
     # --- Magnetic Properties ---
 

@@ -364,12 +364,29 @@ def test_c20_nf_source_function_positive():
     assert float(atm.S1.min()) >= 0.0
 
 
-@xfail("C21", "stereo angles are plain attributes, not buffers; device fixed at init")
-def test_c21_stereo_angles_follow_module_device():
+def test_c21_stereo_angles_are_non_persistent_buffers():
+    """C21 (fixed): angles follow .to() but stay out of the state_dict (old checkpoints load)."""
     from neural_me.core.atmospheres.stereoscopic import StereoscopicAtmosphere
 
     atm = quiet(StereoscopicAtmosphere, grid_shape=(2, 2))
     assert "gamma_rad" in dict(atm.named_buffers())
+    assert not any(k.endswith("_rad") for k in atm.state_dict())
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_c21_stereo_atmospheres_follow_to_cuda():
+    """C21 (fixed): after .to('cuda') device, angles, views and new geometry are on CUDA."""
+    from neural_me.core.atmospheres.stereoscopic import StereoscopicAtmosphere
+    from neural_me.core.atmospheres.nf_stereoscopic import StereoscopicNFAtmosphere
+
+    a = quiet(StereoscopicAtmosphere, grid_shape=(4, 4)).to("cuda")
+    n = quiet(StereoscopicNFAtmosphere, grid_shape=(4, 4), m_freqs=16, dim_hidden=8,
+              num_resnet_blocks=1).to("cuda")
+    for m in (a, n):
+        assert m.device.type == "cuda" and m.gamma_rad.device.type == "cuda"
+        assert m.get_atmosphere(2).device.type == "cuda"
+    a.set_local_vertical_geometry(np.broadcast_to(np.eye(3), (4, 4, 3, 3)).copy())
+    assert a.lv_rotation.device.type == "cuda"
 
 
 @xfail("C22", "atan2(BU, BQ + 1e-15) has a ~1e17 gradient at zero transverse field")
