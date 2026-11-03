@@ -341,8 +341,8 @@ def test_c18_cog_recovers_transverse_field():
 #  Low
 # --------------------------------------------------------------------- #
 
-@xfail("C19", "stereo thermo params stored with 'eta0' norm, clamped with 'thermo1_eta0' norm")
 def test_c19_stereo_clamp_uses_storage_normalization():
+    """C19 (fixed): a non-default normalisation does not move the physical clamp bound."""
     from neural_me.core.atmospheres.stereoscopic import StereoscopicAtmosphere
 
     atm = quiet(StereoscopicAtmosphere, grid_shape=(2, 2))

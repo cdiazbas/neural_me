@@ -380,14 +380,20 @@ class StereoscopicAtmosphere(LocalVerticalMixin, nn.Module):
         """
         norm = self._normalization
 
+        def storage_norm(name):
+            # Thermo parameters are stored, set and read with the unprefixed
+            # normalisation ("eta0"), so clamp with the same one; the bounds
+            # stay per view ("thermo1_eta0").
+            return norm[name.split("_", 1)[1] if name.startswith("thermo") else name]
+
         def clamp_softplus_upper(tensor_raw, name):
             """Clamp raw softplus parameter to its upper physical bound."""
-            _, hi_norm = self._clamp_bounds(name, norm[name])
+            _, hi_norm = self._clamp_bounds(name, storage_norm(name))
             tensor_raw.data.clamp_(max=self._inv_softplus_scalar(hi_norm))
 
         def clamp_linear(tensor_norm, name):
             """Clamp linearly normalized parameter to physical bounds / norm."""
-            lo, hi = self._clamp_bounds(name, norm[name])
+            lo, hi = self._clamp_bounds(name, storage_norm(name))
             tensor_norm.data.clamp_(lo, hi)
         # --- Thermodynamic softplus parameters (Chain B) ---
         clamp_softplus_upper(self.thermo1_eta0_raw, "thermo1_eta0")
