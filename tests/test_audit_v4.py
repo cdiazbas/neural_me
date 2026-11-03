@@ -660,3 +660,17 @@ def test_c10_me_model_passes_gradcheck_in_float64():
                      dtype=torch.float64, requires_grad=True)
     f = lambda q: torch.stack(me(q, wl.expand(1, -1)), 1)
     assert torch.autograd.gradcheck(f, (p,), eps=1e-6, atol=1e-5, rtol=1e-3)
+
+
+@pytest.mark.parametrize("a", [0.0, 0.3])
+def test_c26_hui_faraday_slope_at_line_centre(a):
+    """C26 (fixed): dF/dv at v = 0 equals the finite-difference slope, not 0."""
+    from neural_me.physics.zeeman import fvoigt
+
+    v = torch.zeros(1, dtype=torch.float64, requires_grad=True)
+    damp = torch.tensor([a], dtype=torch.float64)
+    fvoigt(damp, v, method="hui")[1].sum().backward()
+    h = 1e-6
+    fd = (fvoigt(damp, torch.tensor([h], dtype=torch.float64))[1]
+          - fvoigt(damp, torch.tensor([-h], dtype=torch.float64))[1]) / (2 * h)
+    assert float(v.grad) == pytest.approx(float(fd), rel=1e-6)

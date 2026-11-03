@@ -318,7 +318,11 @@ def fvoigt_hui(damp, vv):
         dtype=dtype,
     )
 
-    z = torch.complex(damp.to(dtype), -torch.abs(vv).to(dtype))
+    # Evaluate at |v| and restore the sign: F is odd in v.  The sign is +1 at
+    # v = 0 and |v| is written v * s, so dF/dv at v = 0 is the true slope
+    # (abs() and sign() both have zero derivative there).
+    s = torch.where(vv >= 0, 1.0, -1.0).to(dtype)
+    z = torch.complex(damp.to(dtype), -(vv.to(dtype) * s))
 
     Z = (
         (((((A[6] * z + A[5]) * z + A[4]) * z + A[3]) * z + A[2]) * z + A[1]) * z + A[0]
@@ -328,7 +332,7 @@ def fvoigt_hui(damp, vv):
     )
 
     h = torch.real(Z)
-    f = torch.sign(vv) * torch.imag(Z) * 0.5
+    f = s * torch.imag(Z) * 0.5
 
     return [h, f]
 
