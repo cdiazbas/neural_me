@@ -125,13 +125,23 @@ class PixelSolver:
     ):
         """
         Set B-field parameters from WFA estimates.
+
+        ``BtQ``/``BtU`` are ``Bt cos 2xi`` and ``Bt sin 2xi``.  Cartesian
+        atmospheres take them as they are; the others are given
+        ``B``, ``gamma`` and ``xi`` (in ``[0, pi)``).
         """
-        if isinstance(self.atmosphere, Atmosphere):
-            # Unified Atmosphere
-            self.atmosphere.set_parameters(
-                {"Blos": Blos, "BQ": BtQ, "BU": BtU, "S0": S0, "S1": S1}
-            )
-            return
+        if isinstance(self.atmosphere, CartesianAtmosphere):
+            params = {"Blos": Blos, "BQ": BtQ, "BU": BtU}
+        else:
+            Blos, BtQ, BtU = (np.asarray(v, dtype=np.float64) for v in (Blos, BtQ, BtU))
+            Bt = np.hypot(BtQ, BtU)
+            params = {
+                "B": np.hypot(Blos, Bt),
+                "gamma": np.arctan2(Bt, Blos),
+                "xi": np.mod(0.5 * np.arctan2(BtU, BtQ), np.pi),
+            }
+        params.update(S0=S0, S1=S1)
+        self.atmosphere.set_parameters(params)
 
     def set_from_cog(
         self,

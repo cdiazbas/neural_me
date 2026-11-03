@@ -79,8 +79,8 @@ def test_c02_tps_identity_warp(padding_mode):
     assert torch.allclose(out, img, atol=1e-4)
 
 
-@xfail("C03", "init_from_wfa passes Blos/BQ/BU, spherical set_parameters ignores them")
 def test_c03_pixel_solver_wfa_init_moves_B():
+    """C03 (fixed): WFA init must set B on the default spherical atmosphere."""
     from neural_me.core import MEProblem
     from neural_me.core.observation import Observation
     from neural_me.optimization import PixelSolver
