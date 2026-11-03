@@ -362,12 +362,11 @@ def test_c35_levmar_runs_with_torch_backend():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
-@xfail("C36", "PSFKernel/TwoPSF clamp bounds are CPU tensors, crash on CUDA")
-def test_c36_extended_psf_clamp_on_cuda():
-    from neural_me.optimization.degradation import ExtendedPSFOperator
+def test_c36_psf_clamps_on_cuda():
+    """C36 (fixed): PSF clamp bounds must not be CPU tensors."""
+    from neural_me.optimization.degradation import ExtendedPSFOperator, TwoPSFOperator
 
-    op = quiet(ExtendedPSFOperator, fwhm=2.0, epsilon=0.1).to("cuda")
-    try:
-        op.clamp_parameters()
-    except RuntimeError as e:
-        raise AssertionError(f"clamp_parameters on CUDA: {e}") from e
+    ext = quiet(ExtendedPSFOperator, fwhm=2.0, epsilon=0.1).to("cuda")
+    ext.clamp_parameters()
+    two = quiet(TwoPSFOperator, torch.ones(3, 3), tune_sigma_stray_pixels=True).to("cuda")
+    two.clamp_parameters()

@@ -1,3 +1,4 @@
+import math
 from abc import ABC, abstractmethod
 from typing import Tuple, Optional, Union
 import torch
@@ -124,7 +125,7 @@ class PSFKernel(nn.Module):
 
     def clamp_parameters(self):
         if self.tune_fwhm:
-            self.raw_log_fwhm.data.clamp_(torch.log(torch.tensor(1e-3)), torch.log(torch.tensor(1e5)))
+            self.raw_log_fwhm.data.clamp_(math.log(1e-3), math.log(1e5))
 
     def forward(self) -> torch.Tensor:
         device = self.raw_log_fwhm.device if self.tune_fwhm else self.fixed_fwhm.device
@@ -422,7 +423,7 @@ class TwoPSFOperator(DegradationOperator):
         if self.tune_stray_fraction:
             self.raw_stray_fraction.data.clamp_(-12.0, 12.0)
         if self.tune_sigma_stray_pixels:
-            self.raw_log_sigma_stray.data.clamp_(torch.log(torch.tensor(1e-3)), torch.log(torch.tensor(1e5)))
+            self.raw_log_sigma_stray.data.clamp_(math.log(1e-3), math.log(1e5))
 
     def _get_extended_otf(
         self,
