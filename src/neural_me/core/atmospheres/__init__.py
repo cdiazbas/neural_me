@@ -8,6 +8,7 @@ from .base import (
     DEFAULT_STEREO_PARAMETERS,
     DEFAULT_STEREO_CLAMP_BOUNDS,
 )
+from .local_vertical import LocalVerticalMixin
 from .cartesian import CartesianAtmosphere
 from .spherical import SphericalAtmosphere
 from .spherical_softplus import SphericalSoftplusAtmosphere
@@ -24,6 +25,7 @@ __all__ = [
     "DEFAULT_STEREO_NORMALIZATION",
     "DEFAULT_STEREO_PARAMETERS",
     "DEFAULT_STEREO_CLAMP_BOUNDS",
+    "LocalVerticalMixin",
     "CartesianAtmosphere",
     "SphericalAtmosphere",
     "SphericalSoftplusAtmosphere",

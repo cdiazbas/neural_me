@@ -27,7 +27,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "black", "flake8", "jupyter", "pytest-cov", "ipython"]
+# Solar coordinate / WCS handling for neural_me.core.geometry. Optional:
+# the rotation math works without it, only the WCS-driven helpers need it.
+geometry = ["sunpy>=5.0"]
+# ISPy supplies the Gary & Hagyard reference implementation the geometry
+# cross-validation tests check against: https://github.com/ISP-SST/ISPy
+dev = [
+    "pytest",
+    "black",
+    "flake8",
+    "jupyter",
+    "pytest-cov",
+    "ipython",
+    "sunpy>=5.0",
+    "ISPy",
+]
 cpp = ["cython>=0.29", "numpy>=1.20"]
 
 [project.urls]

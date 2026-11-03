@@ -15,6 +15,10 @@ from neural_me.core import (
     SphericalSoftplusAtmosphere,
     NFAtmosphere,
     StereoscopicNFAtmosphere,
+    wcs_roll_angle,
+    local_vertical_matrix,
+    local_vertical_matrix_from_map,
+    apply_local_vertical,
 )
 
 # Physics components
@@ -50,6 +54,11 @@ __all__ = [
     "SphericalSoftplusAtmosphere",
     "NFAtmosphere",
     "StereoscopicNFAtmosphere",
+    # Geometry
+    "wcs_roll_angle",
+    "local_vertical_matrix",
+    "local_vertical_matrix_from_map",
+    "apply_local_vertical",
     # Physics
     "MilneEddington",
     # Optimization

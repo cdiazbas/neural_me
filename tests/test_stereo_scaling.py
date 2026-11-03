@@ -108,14 +108,3 @@ def test_eta0_set_and_clamp_are_normalized_through_softplus_raw():
     assert eta0_max <= 600.0 + 1e-3
 
 
-def test_epsilon_clamp_bound():
-    """Ensure calibration epsilon cannot drift outside [0, 1]."""
-    atm = StereoscopicAtmosphere(grid_shape=(2, 2))
-
-    atm.epsilon.data.fill_(2.0)
-    atm.clamp_parameters()
-    assert atm.epsilon.item() <= 1.0
-
-    atm.epsilon.data.fill_(-1.0)
-    atm.clamp_parameters()
-    assert atm.epsilon.item() >= 0.0

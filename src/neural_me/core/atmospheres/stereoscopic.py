@@ -15,9 +15,10 @@ import numpy as np
 from typing import Tuple, Optional, Any, Dict
 
 from .base import Atmosphere
+from .local_vertical import LocalVerticalMixin
 
 
-class StereoscopicAtmosphere(nn.Module):
+class StereoscopicAtmosphere(LocalVerticalMixin, nn.Module):
     """
     Unified model for Stereoscopic inversions.
 
@@ -207,6 +208,10 @@ class StereoscopicAtmosphere(nn.Module):
     @property
     def global_Bw(self) -> torch.Tensor:
         return self.global_Bw_raw * self._normalization["global_Bw"]
+
+    def _global_B(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Hook for LocalVerticalMixin: global field in the reference LOS frame."""
+        return self.global_Blos, self.global_Bn, self.global_Bw
 
     # ------------------------------------------------------------------ #
     #  Clamp helpers (mirrors Atmosphere base class API)

@@ -9,10 +9,11 @@ import torch
 import torch.nn as nn
 
 from .base import Atmosphere
+from .local_vertical import LocalVerticalMixin
 from ..nf import MultiMLP, to_coordinates
 
 
-class StereoscopicNFAtmosphere(nn.Module):
+class StereoscopicNFAtmosphere(LocalVerticalMixin, nn.Module):
     """
     Unified model for Stereoscopic inversions using Neural Fields.
     
@@ -90,6 +91,15 @@ class StereoscopicNFAtmosphere(nn.Module):
 
     def _expand(self, tensor: torch.Tensor) -> torch.Tensor:
         return tensor.view(*self.grid_shape)
+
+    def _global_B(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Hook for LocalVerticalMixin: global field in the reference LOS frame."""
+        out = self.NF(self.coords)
+        return (
+            self._expand(5.0 * out[:, 0] * self._normalization["global_Blos"]),
+            self._expand(5.0 * out[:, 1] * self._normalization["global_Bn"]),
+            self._expand(5.0 * out[:, 2] * self._normalization["global_Bw"]),
+        )
 
     def _evaluate_for_view(self, index: int) -> Dict[str, torch.Tensor]:
         """

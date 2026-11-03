@@ -6,6 +6,14 @@ Core components for Milne-Eddington inversions.
 
 from neural_me.core.observation import Observation
 from neural_me.core.problem import MEProblem
+from neural_me.core.geometry import (
+    heliocentric_angles,
+    solar_north_axis,
+    wcs_roll_angle,
+    local_vertical_matrix,
+    local_vertical_matrix_from_map,
+    apply_local_vertical,
+)
 from neural_me.core.atmospheres import (
     Atmosphere,
     SlicedAtmosphere,
@@ -15,6 +23,7 @@ from neural_me.core.atmospheres import (
     StereoscopicAtmosphere,
     NFAtmosphere,
     StereoscopicNFAtmosphere,
+    LocalVerticalMixin,
 )
 from neural_me.core.atmospheres.base import (
     DEFAULT_NORMALIZATION,
@@ -38,7 +47,14 @@ __all__ = [
     "StereoscopicAtmosphere",
     "NFAtmosphere",
     "StereoscopicNFAtmosphere",
+    "LocalVerticalMixin",
     "DEFAULT_NORMALIZATION",
     "DEFAULT_PARAMETERS",
+    "heliocentric_angles",
+    "solar_north_axis",
+    "wcs_roll_angle",
+    "local_vertical_matrix",
+    "local_vertical_matrix_from_map",
+    "apply_local_vertical",
 ]
 
