@@ -460,3 +460,34 @@ def test_c37_levmar_threshold_is_reduced_chi2_with_noise_set():
     solver, rms = _lm_fit(noise_weights=1e-3)
     assert solver.chi2_history[-1] < 1.0
     assert rms < 2e-3
+
+
+@pytest.mark.parametrize("per_pixel", [True, False])
+def test_c39_levmar_warns_when_max_iter_binds(per_pixel):
+    """C39 (fixed): stopping on max_iter with the fit still improving must warn."""
+    from neural_me.core.atmospheres import SphericalSoftplusAtmosphere
+    from neural_me.optimization import LevMarSolver
+
+    prob, data, wl, truth = _lm_synthetic()
+    atm = quiet(SphericalSoftplusAtmosphere, grid_shape=data.shape[:2])
+    solver = quiet(LevMarSolver, prob, atmosphere=atm)
+    solver.set_weights(1e-3, 1e-3, 1e-3, 1e-3)
+    with pytest.warns(UserWarning, match="max_iter=2 reached"):
+        quiet(solver.solve, max_iter=2, verbose=False, per_pixel=per_pixel)
+
+
+def test_c39_levmar_silent_when_converged():
+    """C39 (fixed): a fit that stops on its own criteria does not warn about max_iter."""
+    import warnings as _w
+    from neural_me.core.atmospheres import SphericalSoftplusAtmosphere
+    from neural_me.optimization import LevMarSolver
+
+    prob, data, wl, truth = _lm_synthetic()
+    atm = quiet(SphericalSoftplusAtmosphere, grid_shape=data.shape[:2])
+    solver = quiet(LevMarSolver, prob, atmosphere=atm)
+    solver.set_weights(1e-3, 1e-3, 1e-3, 1e-3)
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        res = quiet(solver.solve, max_iter=200, verbose=False)
+    assert res["n_active"] == 0
+    assert not [w for w in caught if "max_iter" in str(w.message)]

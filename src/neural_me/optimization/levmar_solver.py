@@ -693,6 +693,14 @@ class LevMarSolver:
                     print("\n  Stopped: improvement too small for 2 iterations")
                 break
 
+        else:
+            if max_iter > 0:
+                warnings.warn(
+                    f"LevMarSolver.solve: max_iter={max_iter} reached before any "
+                    "stopping criterion; the fit is not converged.",
+                    stacklevel=2,
+                )
+
         # --- Restore best model --- #
         self._params_to_atmosphere(best_params)
         self.atmosphere.clamp_parameters()
@@ -820,6 +828,14 @@ class LevMarSolver:
         self._params_to_atmosphere(best_params)
         self.atmosphere.clamp_parameters()
 
+        n_active = int(active.sum())
+        if n_active:
+            warnings.warn(
+                f"LevMarSolver.solve: max_iter={max_iter} reached with {n_active} of "
+                f"{n_pix} pixels still improving; their fit is not converged.",
+                stacklevel=3,
+            )
+
         best_chi2 = chi2.mean().item()
         if verbose:
             print(f"  Final: mean Chi2={best_chi2:.5f}, "
@@ -831,7 +847,7 @@ class LevMarSolver:
             "l1_history": self.l1_history,
             "lambda_history": self.lambda_history,
             "n_iterations": it + 1,
-            "n_active": int(active.sum()),
+            "n_active": n_active,
         }
 
     def get_atmosphere(self) -> Atmosphere:
