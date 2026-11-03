@@ -159,6 +159,11 @@ class NFAtmosphere(Atmosphere):
     def S1(self) -> torch.Tensor:
         return self._expand(self._evaluate_nf()["S1"])
 
+    def to_stack(self) -> torch.Tensor:
+        """Stack of the 9 physical parameters from a single network evaluation."""
+        d = self._evaluate_nf()
+        return torch.stack([self._expand(d[k]) for k in ("B", "gamma", "xi", "vlos", "eta0", "a", "ddop", "S0", "S1")], dim=-1)
+
     def clamp_parameters(self):
         """
         No-op since parameter mapping already constrains values to physical bounds.

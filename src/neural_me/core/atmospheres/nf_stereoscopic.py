@@ -101,11 +101,15 @@ class StereoscopicNFAtmosphere(LocalVerticalMixin, nn.Module):
             self._expand(5.0 * out[:, 2] * self._normalization["global_Bw"]),
         )
 
-    def _evaluate_for_view(self, index: int) -> Dict[str, torch.Tensor]:
+    def _evaluate_for_view(self, index: int, out: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
         """
         Evaluate the neural network on the coordinates and map parameters for the given view.
+
+        ``out`` is a network output already computed for ``self.coords``; it
+        lets several views share one evaluation.
         """
-        out = self.NF(self.coords)
+        if out is None:
+            out = self.NF(self.coords)
         
         # 1. Global Cartesian Magnetic Field Components
         Blos = 5.0 * out[:, 0] * self._normalization["global_Blos"]
@@ -187,27 +191,14 @@ class StereoscopicNFAtmosphere(LocalVerticalMixin, nn.Module):
         Bn   = self._expand(5.0 * out[:, 1] * self._normalization["global_Bn"])
         Bw   = self._expand(5.0 * out[:, 2] * self._normalization["global_Bw"])
         
-        thermo1 = self.get_atmosphere(1)
-        thermo2 = self.get_atmosphere(2)
-        
+        thermo = ("vlos", "eta0", "a", "ddop", "S0", "S1")
+        view1 = self._evaluate_for_view(1, out=out)
+        view2 = self._evaluate_for_view(2, out=out)
+
         return torch.stack(
-            [
-                Blos,
-                Bn,
-                Bw,
-                thermo1.vlos,
-                thermo1.eta0,
-                thermo1.a,
-                thermo1.ddop,
-                thermo1.S0,
-                thermo1.S1,
-                thermo2.vlos,
-                thermo2.eta0,
-                thermo2.a,
-                thermo2.ddop,
-                thermo2.S0,
-                thermo2.S1,
-            ],
+            [Blos, Bn, Bw]
+            + [view1[k] for k in thermo]
+            + [view2[k] for k in thermo],
             dim=-1,
         )
 
@@ -267,6 +258,11 @@ class NFViewAtmosphere(Atmosphere):
     @property
     def S1(self) -> torch.Tensor:
         return self.parent._evaluate_for_view(self.index)["S1"]
+
+    def to_stack(self) -> torch.Tensor:
+        """Stack of the 9 physical parameters from a single network evaluation."""
+        d = self.parent._evaluate_for_view(self.index)
+        return torch.stack([d[k] for k in ("B", "gamma", "xi", "vlos", "eta0", "a", "ddop", "S0", "S1")], dim=-1)
 
     def clamp_parameters(self):
         pass

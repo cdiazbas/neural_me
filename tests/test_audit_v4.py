@@ -142,8 +142,8 @@ def test_c07_regularization_is_normalized():
     assert "normalization" in code_only(MEProblem._compute_regularization)
 
 
-@xfail("C08", "NF atmosphere evaluates the network once per property")
 def test_c08_nf_network_runs_once_per_stack():
+    """C08 (fixed): to_stack must evaluate the network once."""
     from neural_me.core.atmospheres import NFAtmosphere
 
     atm = quiet(NFAtmosphere, grid_shape=(4, 4), m_freqs=16, dim_hidden=8, num_resnet_blocks=1)
