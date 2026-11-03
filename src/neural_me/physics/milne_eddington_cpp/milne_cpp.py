@@ -15,6 +15,26 @@ _last_response_functions = None
 CPP_LINES = (6301, 6302, 6173)
 # pyMilne clips the line-of-sight velocity to this value [km/s].
 VLOS_LIMIT = 13.0
+# log gf of pyMilne's table (6302 from Socas-Navarro 2011, the rest from VALD).
+PYMILNE_LOG_GF = {6301: -0.718, 6302: -1.160, 6173: -2.880}
+
+
+class _LineasMilneEddington(ME.MilneEddington):
+    """pyMilne solver whose line (centre, J, g) is the one given, not pyMilne's table.
+
+    The torch backend takes the line from LINEAS; building pyMilne's line from
+    the same values keeps the two backends on the same atomic data.
+    """
+
+    def __init__(self, regions, line, **kwargs):
+        self._line = line
+        super().__init__(regions, [int(line["cw"])], **kwargs)
+
+    def _initLine(self, label, anomalous, dw, precision):
+        d = self._line
+        cls = ME.pyMilne.pyLines if precision == "float64" else ME.pyMilne.pyLinesf
+        return cls(j1=d["jl"], j2=d["ju"], g1=d["gl"], g2=d["gu"], cw=d["cw"],
+                   gf=10.0 ** PYMILNE_LOG_GF[int(d["cw"])], anomalous=anomalous, dw=dw)
 
 class MILNE_function(torch.autograd.Function):
     """
@@ -260,8 +280,10 @@ class MILNE(torch.nn.Module):
             nthreads = torch.get_num_threads()
         print("Using num_threads: ", nthreads)
         print("Using precision: ", precision)
-        self.milne_class = ME.MilneEddington(
-            regions, lines, nthreads=nthreads, precision=precision
+        line = {"cw": float(lambda0), "jl": float(JLow), "ju": float(JUp),
+                "gl": float(gLow), "gu": float(gUp)}
+        self.milne_class = _LineasMilneEddington(
+            regions, line, nthreads=nthreads, precision=precision
         )
         self.mu = mu
         self._last_rf = None  # Store RF from last forward pass for LM solver

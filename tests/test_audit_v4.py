@@ -260,11 +260,22 @@ def test_c13_cpp_unsupported_line_raises_clearly():
         quiet(me, torch.tensor([[500.0, 1.0, 0.5, 0.0, 10.0, 0.2, 0.03, 0.2, 0.8]]), wl)
 
 
-@xfail("C13", "cpp backend uses its own line table (cw, g) instead of LINEAS")
-def test_c13_cpp_line_table_consistent():
-    from neural_me.physics.milne_eddington_cpp import MilneEddington as cppmod
+@pytest.mark.parametrize("line", [6173, 6302, 6301])
+def test_c13_cpp_and_torch_use_the_same_line_data(line):
+    """C13 (fixed): with LINEAS data in both backends they agree to the Voigt-approximation level."""
+    import warnings as _w
+    from neural_me.physics.milne_eddington import MilneEddington
 
-    assert "6173.334" not in code_only(cppmod).replace(" ", "")
+    wl = torch.linspace(-0.5, 0.5, 120, dtype=torch.float64)
+    mc = quiet(MilneEddington, line=line, backend="cpp", lambda_axis=wl)
+    mt = quiet(MilneEddington, line=line)
+    p = torch.tensor([[1200.0, 0.8, 0.5, 1.0, 15.0, 0.25, 0.03, 0.2, 0.8],
+                      [300.0, 2.0, 1.2, -2.0, 6.0, 0.4, 0.035, 0.3, 0.7]], dtype=torch.float64)
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        sc = torch.stack(quiet(mc, p, wl), 1)
+    st = torch.stack(mt(p, wl.expand(2, -1)), 1)
+    assert (sc - st).abs().max() < 5e-4
 
 
 def test_c14_torch_backend_rejects_mu():
