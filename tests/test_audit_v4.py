@@ -126,8 +126,9 @@ def test_c04_levmar_lambda_is_per_pixel():
 #  Medium
 # --------------------------------------------------------------------- #
 
-@xfail("C05", "wcs_roll_angle returns +CROTA2, local_vertical_matrix expects peff=-CROTA2")
-def test_c05_wcs_roll_angle_is_peff():
+@pytest.mark.parametrize("crota2", [30.0, -12.0, 0.0, 3.8])
+def test_c05_wcs_roll_angle_is_peff(crota2):
+    """C05 (fixed): wcs_roll_angle equals ISPy remap2cea's peff = -CROTA2."""
     pytest.importorskip("sunpy")
     import sunpy.map
     from astropy.io.fits import Header
@@ -137,11 +138,12 @@ def test_c05_wcs_roll_angle_is_peff():
     for k, v in dict(NAXIS=2, NAXIS1=10, NAXIS2=10, CRPIX1=5, CRPIX2=5, CRVAL1=0.0,
                      CRVAL2=0.0, CDELT1=1.0, CDELT2=1.0, CTYPE1="HPLN-TAN",
                      CTYPE2="HPLT-TAN", CUNIT1="arcsec", CUNIT2="arcsec",
-                     CROTA2=30.0).items():
+                     CROTA2=crota2).items():
         h[k] = v
     h["DATE-OBS"] = "2022-03-31T19:39:59"
     smap = sunpy.map.Map(np.zeros((10, 10)), h)
-    assert np.degrees(wcs_roll_angle(smap)) == pytest.approx(-30.0)
+    peff = -1.0 * crota2 * np.pi / 180.0  # ISPy.util.remap.remap2cea
+    assert wcs_roll_angle(smap) == pytest.approx(peff, abs=1e-12)
 
 
 @xfail("C06", "StereoSolver loss uses compute_loss_from_syn only, no regularization")

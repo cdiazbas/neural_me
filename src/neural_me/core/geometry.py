@@ -233,12 +233,14 @@ def wcs_roll_angle(smap) -> float:
     direction of the polarimetric calibration shares it is an instrument
     question the WCS cannot answer.  See ``analysis/orientation.ipynb``.
 
-    Equivalent to the ``peff = -CROTA2`` used by
-    :func:`ISPy.util.remap.remap2cea`.
+    Returned with the sign of the ``peff = -CROTA2`` used by
+    :func:`ISPy.util.remap.remap2cea`, which is what the ``roll`` argument
+    of :func:`local_vertical_matrix` expects: ``CROTA2 = 30`` gives -30 deg.
     """
     _require_sunpy()
     m = np.asarray(smap.rotation_matrix, dtype=float)
-    return float(np.arctan2(m[1, 0], m[1, 1]))
+    # atan2(PC2_1, PC2_2) is +CROTA2; peff is its negative.
+    return float(-np.arctan2(m[1, 0], m[1, 1]))
 
 
 def local_vertical_matrix(
