@@ -243,7 +243,8 @@ class SpatialPSFOperator(DegradationOperator):
                 # Transpose to (n_lambda, 1, Ny, Nx) to apply conv2d per wavelength channel
                 S_grid = S.T.reshape(n_lambda, 1, ny, nx)
                 S_padded = F.pad(S_grid, (pad_x, pad_x, pad_y, pad_y), mode=effective_padding_mode)
-                S_conv = F.conv2d(S_padded, kernel, padding=0)
+                # conv2d is a cross-correlation: flip the PSF to convolve, as the FFT path does
+                S_conv = F.conv2d(S_padded, torch.flip(kernel, (-2, -1)), padding=0)
                 out.append(S_conv.reshape(n_lambda, ny * nx).T)
         else: # fft
             ky, kx = kernel.shape[-2], kernel.shape[-1]
