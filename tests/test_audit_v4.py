@@ -295,12 +295,23 @@ def test_c15_local_vertical_state_dict_round_trip():
     assert not c.has_local_vertical_geometry
 
 
-@xfail("C16", "ExtendedPSFOperator docstring calls post_psf the default")
 def test_c16_extended_psf_doc_matches_default():
+    """C16 (fixed): the docstring names the actual default mean_source."""
     from neural_me.optimization.degradation import ExtendedPSFOperator
 
     default = inspect.signature(ExtendedPSFOperator.__init__).parameters["mean_source"].default
     assert f"``mean_source='{default}'`` (default)" in (ExtendedPSFOperator.__doc__ or "")
+
+
+def test_c32_docstring_drift_quotes_gone():
+    """C32 (fixed): the wrong statements are no longer in the docstrings."""
+    from neural_me.optimization import levmar_solver, stereo_solver
+    from neural_me.physics import zeeman
+
+    assert "(0 or 1)" not in inspect.getsource(stereo_solver)
+    assert "(J^T J + (1 + lambda) * diag(J^T J))" not in inspect.getsource(levmar_solver)
+    assert "More accurate than Hui" not in inspect.getsource(zeeman)
+    assert "less accurate than Humlicek" not in inspect.getsource(zeeman)
 
 
 @xfail("C17", "2D Lorentzian kernel shape depends on kernel_size")

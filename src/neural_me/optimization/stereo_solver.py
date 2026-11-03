@@ -37,7 +37,7 @@ class StereoSolver:
             problem2: MEProblem for Instrument 2 (Secondary/SolO).
             lr: Learning rate.
             alpha: Weighting factor for loss: (1-alpha)*L1 + alpha*L2.
-            degradation_operators: Dict mapping view index (0 or 1) to a DegradationOperator.
+            degradation_operators: Dict mapping view index (1 or 2) to a DegradationOperator.
         """
         self.atmosphere = atmosphere
         self.problem1 = problem1

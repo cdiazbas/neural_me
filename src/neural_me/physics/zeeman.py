@@ -197,7 +197,8 @@ def fvoigt_humlicek(damp, vv):
     """
     Humlicek's 4-region Voigt approximation (matches C++ backend exactly).
 
-    More accurate than Hui's method, especially in line core.
+    Use it for parity with the C++ backend.  Against ``scipy.special.wofz``
+    it is less accurate than Hui's (max |H| error 3.3e-5 vs 4.6e-6 at a = 0).
     """
     # Ensure inputs are complex-compatible
     a = damp.float()
@@ -281,7 +282,8 @@ def fvoigt_hui(damp, vv):
     """
     Hui's single rational approximation (original PyTorch implementation).
 
-    Faster but less accurate than Humlicek's method.
+    The default.  Against ``scipy.special.wofz`` its max |H| error is
+    4.6e-6 at a = 0, 3-35x smaller than Humlicek's over a in [0, 2].
     """
     device = damp.device
     dtype = damp.dtype
@@ -337,7 +339,7 @@ def fvoigt(damp, vv, method="hui"):
     Args:
         damp: Damping parameter (a)
         vv: Velocity/frequency parameter (v)
-        method: "hui" (default, fast) or "humlicek" (accurate, matches C++ backend).
+        method: "hui" (default, the more accurate) or "humlicek" (matches the C++ backend).
                 Note: Using "hui" (default) causes numerical differences vs. the C++ backend
                 which always uses Humlicek. Use "humlicek" for maximum C++/Torch parity.
 
