@@ -143,14 +143,15 @@ class MilneEddingtonTorch(nn.Module):
         spi_0, ssr_0, ssb_0 = param[1]
         l0 = param[2][7]
 
-        # Ensure parameters are on the same device as input B
-        device = B.device
-        dpi_0 = dpi_0.to(device)
-        dsr_0 = dsr_0.to(device)
-        dsb_0 = dsb_0.to(device)
-        spi_0 = spi_0.to(device)
-        ssr_0 = ssr_0.to(device)
-        ssb_0 = ssb_0.to(device)
+        # Match the device and dtype of the input: the line pattern is stored
+        # in float64 and would otherwise promote the whole synthesis.
+        device, dtype = B.device, B.dtype
+        dpi_0 = dpi_0.to(device=device, dtype=dtype)
+        dsr_0 = dsr_0.to(device=device, dtype=dtype)
+        dsb_0 = dsb_0.to(device=device, dtype=dtype)
+        spi_0 = spi_0.to(device=device, dtype=dtype)
+        ssr_0 = ssr_0.to(device=device, dtype=dtype)
+        ssb_0 = ssb_0.to(device=device, dtype=dtype)
 
         # Lorentz splitting [Å] and velocity shift [Å]
         lB = 4.67e-13 * l0**2.0 * B  # (batch, 1)

@@ -339,16 +339,16 @@ def _torch_problem(precision="float32"):
                  precision=precision), wl
 
 
-@xfail("C34", "torch backend promotes to float64 whatever precision is requested")
 def test_c34_torch_backend_honours_float32():
+    """C34 (fixed): precision='float32' must give float32 Stokes."""
     prob, wl = _torch_problem("float32")
     p = torch.tensor([[800.0, 0.7, 0.4, 0.5, 12.0, 0.2, 0.035, 0.2, 0.8]]).repeat(4, 1)
     I, Q, U, V = prob.model(p, wl.expand(4, -1))
     assert I.dtype == torch.float32
 
 
-@xfail("C35", "LevMarSolver with the torch backend fails on a float32/float64 mix")
 def test_c35_levmar_runs_with_torch_backend():
+    """C35 (fixed): LevMarSolver must run with the torch backend."""
     from neural_me.core.atmospheres import SphericalSoftplusAtmosphere
     from neural_me.optimization import LevMarSolver
 
