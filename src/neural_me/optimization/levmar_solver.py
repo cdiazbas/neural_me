@@ -12,20 +12,22 @@ For the torch backend, autograd (jacrev+vmap) is used as fallback.
 
 Key features matching the C++ implementation:
   - Hessian approximation: J^T J
-  - Diagonal damping: (1 + lambda) * diag(J^T J)
+  - Diagonal damping: diag(J^T J) scaled by (1 + lambda)
   - Step acceptance/rejection with lambda adaptation
   - Best-model tracking and convergence criteria
   - Parameter bounds via CartesianAtmosphere.clamp_parameters()
 
 The LM update solves per pixel:
-    (J^T J + (1 + lambda) * diag(J^T J)) * delta = J^T * r
+    (J^T J + lambda * diag(J^T J)) * delta = J^T * r
 
 Author: C. Diaz Baso (2026)
 """
 
+import time
+import warnings
+
 import torch
 import numpy as np
-import time
 from typing import Optional, Dict
 from tqdm import trange
 
@@ -118,8 +120,9 @@ class LevMarSolver:
         self._n_dat = 4 * self._n_wav_active
         self._mask = mask  # Store mask for applying to synthetic spectra
 
-        # Noise weights (sigma). Default: uniform.
+        # Noise weights (sigma). Default: uniform, i.e. noise unknown.
         self._sigma = torch.ones(self._n_dat, device=self.device)
+        self._noise_set = False
 
         # Wavelengths: use ALL wavelengths for forward model (matching MEProblem)
         self._wl = self.problem.obs.wavelengths.to(self.device)
@@ -140,8 +143,12 @@ class LevMarSolver:
         sigma_V: float = 1.0,
     ):
         """
-        Set per-Stokes noise weights (inverse weights for Chi2).
+        Set the per-Stokes noise (standard deviation) used to weight Chi2.
+
+        Once set, Chi2 is the reduced Chi2 of the data and
+        ``solve(chi2_threshold=1.0)`` stops at a fit at the noise level.
         """
+        self._noise_set = True
         nw = self._n_wav_active
         self._sigma = torch.cat(
             [
@@ -266,8 +273,12 @@ class LevMarSolver:
         return (obs - syn) / self._sigma.unsqueeze(0)
 
     def _compute_chi2(self, residuals: torch.Tensor) -> torch.Tensor:
-        """Per-pixel Chi2: (n_pixels,)"""
-        return torch.sum(residuals**2, dim=-1)
+        """Per-pixel reduced Chi2, sum of squared residuals / n_dat: (n_pixels,)
+
+        Divided by the number of data points as pyMilne does, so that with the
+        noise set (:meth:`set_weights`) a value of 1 means a fit at the noise.
+        """
+        return torch.sum(residuals**2, dim=-1) / self._n_dat
     
     def _compute_l1_loss(self, obs: torch.Tensor, syn: torch.Tensor) -> float:
         """Compute L1 loss matching MEProblem.compute_loss() with loss_type='l1'"""
@@ -461,7 +472,10 @@ class LevMarSolver:
         Args:
             max_iter: Maximum LM iterations.
             init_lambda: Initial damping parameter.
-            chi2_threshold: Stop if mean Chi2 drops below this.
+            chi2_threshold: Stop if the mean reduced Chi2 drops below this.
+                Only applied once the noise is known (:meth:`set_weights`);
+                with the default unit weights it is ignored, with a warning,
+                because Chi2 then has no absolute scale.
             fx_threshold: Stop if relative Chi2 improvement < this for 2 iters.
             max_rejects: Max consecutive rejected steps before stopping.
             recompute_jacobian_after: Recompute Jacobian after N consecutive rejections.
@@ -479,6 +493,15 @@ class LevMarSolver:
             return max(min_lam, min(max_lam, val))
 
         lam = check_lambda(init_lambda)
+
+        if chi2_threshold > 0 and not self._noise_set:
+            warnings.warn(
+                "LevMarSolver.solve: chi2_threshold is ignored because the noise "
+                "is not set; call set_weights(sigma_I, sigma_Q, sigma_U, sigma_V) "
+                "to stop on reduced Chi2.",
+                stacklevel=2,
+            )
+            chi2_threshold = 0.0
 
         # --- Initial parameters --- #
         self.atmosphere.clamp_parameters()

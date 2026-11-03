@@ -388,3 +388,55 @@ def test_c36_psf_clamps_on_cuda():
     ext.clamp_parameters()
     two = quiet(TwoPSFOperator, torch.ones(3, 3), tune_sigma_stray_pixels=True).to("cuda")
     two.clamp_parameters()
+
+
+# --------------------------------------------------------------------- #
+#  Found while certifying fixes
+# --------------------------------------------------------------------- #
+
+def _lm_synthetic(seed=0, ny=4, nx=4, nw=40, noise=1e-3):
+    from neural_me.core import MEProblem
+    from neural_me.core.observation import Observation
+
+    g = torch.Generator().manual_seed(seed)
+    n = ny * nx
+    wl = torch.linspace(-0.4, 0.4, nw)
+    truth = torch.tensor([[900.0, 0.9, 0.6, 0.4, 12.0, 0.25, 0.032, 0.2, 0.8]]).repeat(n, 1)
+    truth = truth * (1 + 0.2 * (torch.rand(truth.shape, generator=g) - 0.5))
+    p0 = quiet(MEProblem, Observation(torch.zeros(ny, nx, 4, nw), wl),
+               line=6302, backend="torch", compile=False)
+    data = torch.stack(p0.model(truth, wl.expand(n, -1)), 1).reshape(ny, nx, 4, nw).detach()
+    data = data + noise * torch.randn(data.shape, generator=g)
+    prob = quiet(MEProblem, Observation(data, wl), line=6302, backend="torch", compile=False)
+    return prob, data, wl, truth
+
+
+def _lm_fit(noise_weights=None, **solve_kwargs):
+    from neural_me.core.atmospheres import SphericalSoftplusAtmosphere
+    from neural_me.optimization import LevMarSolver
+
+    prob, data, wl, truth = _lm_synthetic()
+    ny, nx = data.shape[:2]
+    atm = quiet(SphericalSoftplusAtmosphere, grid_shape=(ny, nx))
+    solver = quiet(LevMarSolver, prob, atmosphere=atm)
+    if noise_weights is not None:
+        solver.set_weights(*([noise_weights] * 4))
+    quiet(solver.solve, max_iter=60, verbose=False, **solve_kwargs)
+    st = atm.to_stack().reshape(-1, 9).detach()
+    syn = torch.stack(prob.model(st, wl.expand(st.shape[0], -1)), 1).reshape(data.shape)
+    return solver, float((syn - data).pow(2).mean().sqrt())
+
+
+def test_c37_levmar_default_solve_reaches_the_noise():
+    """C37 (fixed): with unit weights chi2_threshold must not stop the fit after one step."""
+    with pytest.warns(UserWarning, match="chi2_threshold is ignored"):
+        solver, rms = _lm_fit()
+    assert len(solver.chi2_history) > 3
+    assert rms < 2e-3  # noise is 1e-3
+
+
+def test_c37_levmar_threshold_is_reduced_chi2_with_noise_set():
+    """C37 (fixed): with the noise set, chi2_threshold=1 stops at a fit at the noise."""
+    solver, rms = _lm_fit(noise_weights=1e-3)
+    assert solver.chi2_history[-1] < 1.0
+    assert rms < 2e-3
