@@ -116,6 +116,22 @@ class LocalVerticalMixin:
     def has_local_vertical_geometry(self) -> bool:
         return "lv_rotation" in self._buffers
 
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        """Register the geometry buffers before loading a checkpoint that has them.
+
+        The buffers only exist once geometry is installed, so a checkpoint
+        saved after :meth:`set_local_vertical_geometry` would otherwise not
+        load into a freshly built atmosphere.
+        """
+        key = prefix + "lv_rotation"
+        if key in state_dict and not self.has_local_vertical_geometry:
+            on_disk = state_dict.get(prefix + "lv_on_disk")
+            self.set_local_vertical_geometry(
+                state_dict[key].detach().cpu().numpy(),
+                None if on_disk is None else on_disk.detach().cpu().numpy(),
+            )
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
     # ------------------------------------------------------------------ #
     #  Field in the local vertical frame
     # ------------------------------------------------------------------ #

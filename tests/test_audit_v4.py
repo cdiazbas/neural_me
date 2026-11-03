@@ -276,17 +276,23 @@ def test_c14_torch_backend_rejects_mu():
     quiet(MilneEddington, line=6302, backend="torch", mu=1.0)
 
 
-@xfail("C15", "LocalVerticalMixin registers its buffers lazily")
 def test_c15_local_vertical_state_dict_round_trip():
+    """C15 (fixed): a checkpoint with geometry loads into a fresh atmosphere, values intact."""
     from neural_me.core.atmospheres.stereoscopic import StereoscopicAtmosphere
 
     a = quiet(StereoscopicAtmosphere, grid_shape=(2, 2))
-    a.set_local_vertical_geometry(np.broadcast_to(np.eye(3), (2, 2, 3, 3)).copy())
+    rot = np.broadcast_to(np.diag([1.0, -1.0, 1.0]), (2, 2, 3, 3)).copy()
+    mask = np.array([[True, False], [True, True]])
+    a.set_local_vertical_geometry(rot, mask)
     b = quiet(StereoscopicAtmosphere, grid_shape=(2, 2))
-    try:
-        b.load_state_dict(a.state_dict())
-    except RuntimeError as e:
-        raise AssertionError(f"checkpoint does not load into a fresh atmosphere: {e}") from e
+    b.load_state_dict(a.state_dict())
+    assert b.has_local_vertical_geometry
+    assert torch.equal(b.lv_rotation, a.lv_rotation)
+    assert torch.equal(b.lv_on_disk, a.lv_on_disk)
+    # a checkpoint without geometry still loads strictly into a fresh atmosphere
+    c = quiet(StereoscopicAtmosphere, grid_shape=(2, 2))
+    c.load_state_dict(quiet(StereoscopicAtmosphere, grid_shape=(2, 2)).state_dict())
+    assert not c.has_local_vertical_geometry
 
 
 @xfail("C16", "ExtendedPSFOperator docstring calls post_psf the default")
