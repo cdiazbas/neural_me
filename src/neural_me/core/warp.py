@@ -183,8 +183,9 @@ def plot_grid(
         if image_shape is None:
             return arr[..., 0], arr[..., 1]
         H, W = image_shape
-        px_x = (arr[..., 0] + 1.0) / 2.0 * W
-        px_y = (arr[..., 1] + 1.0) / 2.0 * H
+        # -1 and +1 are the centres of the first and last pixels.
+        px_x = (arr[..., 0] + 1.0) / 2.0 * (W - 1)
+        px_y = (arr[..., 1] + 1.0) / 2.0 * (H - 1)
         return px_x, px_y
 
     # --- Draw a grid (rows + columns) from a (grid_n, grid_n, 2) array --------
@@ -333,6 +334,11 @@ def differentiable_tps_warp(
                       'border'     – repeat edge pixels
                       'reflection' – mirror image at borders
 
+    Control points are in normalised coordinates where -1 and +1 are the
+    centres of the first and last pixels (``align_corners=True``), the same
+    convention as the sampling grid, so identical point sets give the
+    identity.
+
     Returns:
         Warped tensor of the same shape as *image*.
     """
@@ -352,7 +358,8 @@ def differentiable_tps_warp(
 
     if padding_mode == 'zeros':
         # Fast path: use kornia's built-in function
-        warped = warp_image_tps(image, points_src, kernel_weights, affine_weights)
+        warped = warp_image_tps(image, points_src, kernel_weights, affine_weights,
+                                align_corners=True)
     else:
         # Build the dense sampling grid manually so we can pass any padding_mode
         # to F.grid_sample (older kornia versions don't expose this in warp_image_tps).
@@ -366,7 +373,7 @@ def differentiable_tps_warp(
         src_pts = warp_points_tps(grid_pts, points_src, kernel_weights, affine_weights)
         src_pts = src_pts.expand(B, -1, -1).view(B, H, W, 2)
         warped = F.grid_sample(image, src_pts, mode='bilinear',
-                               padding_mode=padding_mode, align_corners=False)
+                               padding_mode=padding_mode, align_corners=True)
 
     return warped.squeeze(0).squeeze(0) if is_2d else warped
 

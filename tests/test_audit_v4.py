@@ -67,9 +67,9 @@ def test_c01_wfa_recovers_transverse_field():
     assert btu == pytest.approx(150.0, rel=0.2)
 
 
-@xfail("C02", "TPS warp built with corner-aligned grid, sampled with align_corners=False")
 @pytest.mark.parametrize("padding_mode", ["zeros", "border"])
 def test_c02_tps_identity_warp(padding_mode):
+    """C02 (fixed): identical control points must give the identity."""
     from neural_me.core.warp import differentiable_tps_warp, get_points_src
 
     torch.manual_seed(0)
@@ -77,6 +77,22 @@ def test_c02_tps_identity_warp(padding_mode):
     p = get_points_src(9)
     out = differentiable_tps_warp(img, p, p.clone(), padding_mode=padding_mode)
     assert torch.allclose(out, img, atol=1e-4)
+
+
+@pytest.mark.parametrize("dx_px", [3, -5])
+def test_c02_tps_integer_shift_is_exact(dx_px):
+    """C02 (fixed): shifting every control point by k pixels moves features by k pixels."""
+    from neural_me.core.warp import differentiable_tps_warp, get_points_src
+
+    H, W = 41, 61
+    spot = torch.zeros(1, 1, H, W)
+    spot[..., 5, 50] = 1.0  # off-centre: a scale error shows up here, not at the centre
+    p = get_points_src(9)
+    d = p.clone()
+    d[..., 0] += dx_px * 2.0 / (W - 1)
+    out = differentiable_tps_warp(spot, p, d, padding_mode="zeros")[0, 0]
+    assert divmod(int(out.argmax()), W) == (5, 50 + dx_px)
+    assert float(out.max()) == pytest.approx(1.0, abs=1e-4)
 
 
 def test_c03_pixel_solver_wfa_init_moves_B():
