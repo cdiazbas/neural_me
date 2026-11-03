@@ -217,8 +217,8 @@ def test_a01_view_magnetic_computed_once():
     assert calls["n"] == 1
 
 
-@xfail("C10", "Voigt functions cast inputs to float32")
 def test_c10_voigt_keeps_float64():
+    """C10 (fixed): float64 inputs give float64 Voigt profiles."""
     from neural_me.physics.zeeman import fvoigt
 
     H, F = fvoigt(torch.tensor([0.1], dtype=torch.float64),
@@ -648,3 +648,15 @@ def test_a10_cartesian_field_computed_once_per_stack():
     atm._field = orig
     assert torch.equal(st[..., 0], atm.B) and torch.equal(st[..., 1], atm.gamma)
     assert torch.equal(st[..., 2], atm.xi)
+
+
+def test_c10_me_model_passes_gradcheck_in_float64():
+    """C10 (fixed): with float64 Voigt profiles the ME Jacobian matches finite differences."""
+    from neural_me.physics.milne_eddington import MilneEddington
+
+    me = quiet(MilneEddington, line=6173)
+    wl = torch.linspace(-0.5, 0.5, 30, dtype=torch.float64)
+    p = torch.tensor([[800.0, 0.8, 0.5, 0.7, 12.0, 0.25, 0.03, 0.2, 0.8]],
+                     dtype=torch.float64, requires_grad=True)
+    f = lambda q: torch.stack(me(q, wl.expand(1, -1)), 1)
+    assert torch.autograd.gradcheck(f, (p,), eps=1e-6, atol=1e-5, rtol=1e-3)

@@ -200,9 +200,10 @@ def fvoigt_humlicek(damp, vv):
     Use it for parity with the C++ backend.  Against ``scipy.special.wofz``
     it is less accurate than Hui's (max |H| error 3.3e-5 vs 4.6e-6 at a = 0).
     """
-    # Ensure inputs are complex-compatible
-    a = damp.float()
-    v = vv.float()
+    # Common floating dtype of the inputs (float32 stays float32, float64 stays float64)
+    dt = torch.promote_types(damp.dtype, vv.dtype)
+    a = damp.to(dt)
+    v = vv.to(dt)
 
     # Compute sav = |v| + a for region selection
     sav = torch.abs(v) + a
@@ -286,7 +287,7 @@ def fvoigt_hui(damp, vv):
     4.6e-6 at a = 0, 3-35x smaller than Humlicek's over a in [0, 2].
     """
     device = damp.device
-    dtype = damp.dtype
+    dtype = torch.promote_types(damp.dtype, vv.dtype)
 
     A = torch.tensor(
         [
@@ -317,7 +318,7 @@ def fvoigt_hui(damp, vv):
         dtype=dtype,
     )
 
-    z = torch.complex(damp.float(), -torch.abs(vv).float())
+    z = torch.complex(damp.to(dtype), -torch.abs(vv).to(dtype))
 
     Z = (
         (((((A[6] * z + A[5]) * z + A[4]) * z + A[3]) * z + A[2]) * z + A[1]) * z + A[0]
