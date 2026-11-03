@@ -295,7 +295,7 @@ class LevMarSolver:
         
         # Weighted sum (assuming equal weights [1,1,1,1])
         weights = self.problem.weights if hasattr(self.problem, 'weights') else [1.0, 1.0, 1.0, 1.0]
-        l1_loss = weights[0] * err_I + weights[1] * err_Q + weights[2] * err_U + weights[3] * err_V
+        l1_loss = (weights[0] * err_I + weights[1] * err_Q + weights[2] * err_U + weights[3] * err_V) / 4.0
         return l1_loss.item()
 
     def _solve_lm_step(
