@@ -482,8 +482,11 @@ class LevMarSolver:
                 because Chi2 then has no absolute scale.
             fx_threshold: Stop if relative Chi2 improvement < this for 2 iters.
             max_rejects: Max consecutive rejected steps before stopping.
-            recompute_jacobian_after: Recompute Jacobian after N consecutive
-                rejections (``per_pixel=False`` only).
+            recompute_jacobian_after: Reset lambda to ``init_lambda`` after N
+                consecutive rejections; stop after the third reset without an
+                accepted step (``per_pixel=False`` only). The name is kept for
+                compatibility: the Jacobian is not recomputed, since the model
+                has not moved.
             verbose: Print iteration info.
             per_pixel: Give every pixel its own lambda, accept/reject and
                 stopping criteria, as pyMilne's fitData does (default). With
@@ -644,23 +647,16 @@ class LevMarSolver:
                         }
                     )
 
-                # Recompute Jacobian after several rejections to get fresh direction
+                # After several rejections, reset lambda. best_params has not
+                # moved since the last accepted step, so its Jacobian is still
+                # the current one and is not recomputed.
                 if n_rejected > 0 and n_rejected % recompute_jacobian_after == 0:
                     n_jacobian_recomputes += 1
-                    if verbose:
-                        iterator.write(f"  [Recomputing Jacobian after {n_rejected} rejections (#{n_jacobian_recomputes})]")
-                    t_jac = time.time()
-                    self._params_to_atmosphere(best_params)
-                    syn, J = self._forward_and_jacobian(best_params)
-                    J_w = J * sigma_inv.unsqueeze(1)
-                    r = self._compute_residuals(self._obs_flat, syn)
-                    dt_jac = time.time() - t_jac
-                    # Reset lambda after Jacobian recompute to be less conservative
                     lam = check_lambda(init_lambda)
                     if verbose:
-                        iterator.write(f"  [Reset lambda to {lam:.2e}, dt={dt_jac:.2f}s]")
-                    
-                    # Stop if we've recomputed Jacobian too many times without progress
+                        iterator.write(f"  [Reset lambda to {lam:.2e} after {n_rejected} rejections (#{n_jacobian_recomputes})]")
+
+                    # Stop if lambda was reset too many times without progress
                     if n_jacobian_recomputes >= 3:
                         if verbose:
                             iterator.write(f"  [Stopping: {n_jacobian_recomputes} Jacobian recomputations without progress - likely at local minimum]")
