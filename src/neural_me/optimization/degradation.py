@@ -187,6 +187,14 @@ class SpatialPSFOperator(DegradationOperator):
         self.method = method.lower()
         self.padding_mode = padding_mode.lower()
         assert self.method in ["fft", "conv2d"], "method must be 'fft' or 'conv2d'"
+        if self.method == "conv2d":
+            ky, kx = 2 * self.padding[0] + 1, 2 * self.padding[1] + 1
+            shape = (self.kernel_model() if self.kernel_model is not None else self.kernel).shape[-2:]
+            if tuple(shape) != (ky, kx):
+                raise ValueError(
+                    f"method='conv2d' needs an odd-sized kernel, got {tuple(shape)}; "
+                    "use method='fft' or an odd size"
+                )
         assert self.padding_mode in ["reflect", "replicate", "constant"], "padding_mode must be 'reflect', 'replicate', or 'constant'"
         if verbose:
             if self.kernel_model is not None:
@@ -282,6 +290,10 @@ class SpectralPSFOperator(DegradationOperator):
         # kernel of shape (1, 1, K_lambda) or (K_lambda,)
         if kernel.dim() == 1:
             kernel = kernel.unsqueeze(0).unsqueeze(0)
+        if kernel.shape[-1] % 2 == 0:
+            raise ValueError(
+                f"spectral kernel must have an odd number of samples, got {kernel.shape[-1]}"
+            )
         self.normalize_kernel = normalize_kernel
         self.register_buffer("kernel", kernel)
         self.padding = kernel.shape[-1] // 2

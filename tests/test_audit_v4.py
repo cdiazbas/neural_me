@@ -560,3 +560,16 @@ def test_c24_stereo_set_parameters_accepts_scalars():
     atm.set_parameters({"thermo1_eta0": 42.0, "thermo2_vlos": np.arange(6.0)})
     assert torch.allclose(atm.get_atmosphere(1).eta0, torch.full((2, 3), 42.0), rtol=1e-4)
     assert torch.allclose(atm.get_atmosphere(2).vlos.flatten(), torch.arange(6.0), atol=1e-5)
+
+
+def test_c25_even_kernels_rejected_where_unsupported():
+    """C25 (fixed): even kernels raise a clear error for conv2d and spectral PSFs; FFT still accepts them."""
+    from neural_me.optimization.degradation import SpatialPSFOperator, SpectralPSFOperator
+
+    with pytest.raises(ValueError, match="odd"):
+        quiet(SpatialPSFOperator, torch.ones(4, 4), method="conv2d", verbose=False)
+    with pytest.raises(ValueError, match="odd"):
+        quiet(SpectralPSFOperator, torch.ones(4))
+    quiet(SpatialPSFOperator, torch.ones(4, 4), method="fft", verbose=False)
+    quiet(SpatialPSFOperator, torch.ones(5, 5), method="conv2d", verbose=False)
+    quiet(SpectralPSFOperator, torch.ones(5))
