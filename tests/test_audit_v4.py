@@ -389,8 +389,8 @@ def test_c21_stereo_atmospheres_follow_to_cuda():
     assert a.lv_rotation.device.type == "cuda"
 
 
-@xfail("C22", "atan2(BU, BQ + 1e-15) has a ~1e17 gradient at zero transverse field")
 def test_c22_cartesian_xi_gradient_finite_scale():
+    """C22 (fixed): the azimuth gradient stays bounded at zero transverse field."""
     from neural_me.core.atmospheres import CartesianAtmosphere
 
     atm = quiet(CartesianAtmosphere, grid_shape=(2,), init_type="zeros")

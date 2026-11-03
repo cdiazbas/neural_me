@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .base import Atmosphere
+from .base import Atmosphere, half_atan2_azimuth
 from ..nf import MultiMLP, to_coordinates
 
 
@@ -101,7 +101,7 @@ class NFAtmosphere(Atmosphere):
         B = torch.sqrt(B2)
         ratio = torch.clamp(Blos / B, -1.0 + 1e-6, 1.0 - 1e-6)
         gamma = torch.acos(ratio)
-        xi = 0.5 * torch.atan2(BU, BQ + 1e-15)
+        xi = half_atan2_azimuth(BU, BQ)
 
         # 2. Thermodynamics
         # vlos: map to range using tanh

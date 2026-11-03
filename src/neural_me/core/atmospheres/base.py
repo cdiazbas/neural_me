@@ -76,6 +76,19 @@ DEFAULT_CLAMP_BOUNDS = {
 }
 
 
+def half_atan2_azimuth(BU: torch.Tensor, BQ: torch.Tensor) -> torch.Tensor:
+    """Azimuth ``0.5 * atan2(BU, BQ)`` with a finite gradient at zero transverse field.
+
+    Where ``BQ = BU = 0`` the azimuth is undefined; it is returned as 0 with a
+    zero gradient instead of the ~1e17 gradient of ``atan2(BU, BQ + eps)``.
+    Elsewhere the value is that of ``0.5 * atan2(BU, BQ + 1e-15)``.
+    """
+    zero = (BQ * BQ + BU * BU) < 1e-24
+    BU_safe = torch.where(zero, torch.zeros_like(BU), BU)
+    BQ_safe = torch.where(zero, torch.ones_like(BQ), BQ + 1e-15)
+    return 0.5 * torch.atan2(BU_safe, BQ_safe)
+
+
 def _expand_stereo_thermo_dict(source: Dict[str, Any]) -> Dict[str, Any]:
     """Duplicate shared thermodynamic values for the two stereoscopic views."""
     return {

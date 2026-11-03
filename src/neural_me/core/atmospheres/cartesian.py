@@ -7,7 +7,7 @@ import torch.nn as nn
 import numpy as np
 from typing import Optional, Tuple, Dict, Any
 
-from .base import Atmosphere
+from .base import Atmosphere, half_atan2_azimuth
 
 
 class CartesianAtmosphere(Atmosphere):
@@ -139,7 +139,7 @@ class CartesianAtmosphere(Atmosphere):
             [
                 self._expand(B),
                 self._expand(self._gamma_from(Blos, B)),
-                self._expand(0.5 * torch.atan2(BU, BQ + 1e-15)),
+                self._expand(half_atan2_azimuth(BU, BQ)),
                 self.vlos, self.eta0, self.a, self.ddop, self.S0, self.S1,
             ],
             dim=-1,
@@ -150,7 +150,7 @@ class CartesianAtmosphere(Atmosphere):
         BQ = self._BQ * self.norm["BQ"]
         BU = self._BU * self.norm["BU"]
         # xi = 0.5 * atan2(BU, BQ) → result in [-π/2, π/2]
-        return self._expand(0.5 * torch.atan2(BU, BQ + 1e-15))
+        return self._expand(half_atan2_azimuth(BU, BQ))
 
     @property
     def vlos(self) -> torch.Tensor:
