@@ -525,10 +525,10 @@ class ExtendedPSFOperator(DegradationOperator):
         FoV-mean component. Two mean-source conventions are supported through
         ``mean_source``:
 
-        - ``mean_source='post_psf'`` (default):
+        - ``mean_source='post_psf'``:
             S_out = (1 - epsilon) * (PSF * S) + epsilon * <PSF * S>_FoV
 
-        - ``mean_source='pre_psf'``:
+        - ``mean_source='pre_psf'`` (default):
             S_out = (1 - epsilon) * (PSF * S) + epsilon * <S>_FoV
 
         If the PSF and boundary handling preserve the spatial mean exactly, both
