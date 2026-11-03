@@ -250,13 +250,21 @@ def test_c12_spectral_psf_preserves_flat_continuum():
     assert torch.allclose(out, I, atol=1e-6)
 
 
-@xfail("C13", "cpp backend uses its own line table and an invalid '{0 }' format string")
+def test_c13_cpp_unsupported_line_raises_clearly():
+    """C13 (crash, fixed): an unsupported line raises ValueError, not KeyError from pyMilne."""
+    from neural_me.physics.milne_eddington import MilneEddington
+
+    wl = torch.linspace(-0.5, 0.5, 20)
+    with pytest.raises(ValueError, match="cpp backend implements lines"):
+        me = quiet(MilneEddington, line=15648, backend="cpp", lambda_axis=wl)
+        quiet(me, torch.tensor([[500.0, 1.0, 0.5, 0.0, 10.0, 0.2, 0.03, 0.2, 0.8]]), wl)
+
+
+@xfail("C13", "cpp backend uses its own line table (cw, g) instead of LINEAS")
 def test_c13_cpp_line_table_consistent():
     from neural_me.physics.milne_eddington_cpp import MilneEddington as cppmod
 
-    src = code_only(cppmod)
-    assert "{0 }" not in src
-    assert "6173.334" not in src.replace(" ", "")
+    assert "6173.334" not in code_only(cppmod).replace(" ", "")
 
 
 @xfail("C14", "torch backend ignores mu")

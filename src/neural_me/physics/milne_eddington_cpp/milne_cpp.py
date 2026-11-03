@@ -8,6 +8,10 @@ from einops import rearrange
 _last_response_functions = None
 
 
+
+# Lines hard-coded in pyMilne's MilneEddington.pyLines (vendored, not tracked).
+CPP_LINES = (6301, 6302, 6173)
+
 class MILNE_function(torch.autograd.Function):
     """
     PyTorch autograd function wrapping the C++ Milne-Eddington synthesis.
@@ -195,6 +199,12 @@ class MILNE(torch.nn.Module):
         super(MILNE, self).__init__()
 
         self.spectralPSF = spectralPSF
+
+        if int(lambda0) not in CPP_LINES:
+            raise ValueError(
+                f"The cpp backend implements lines {CPP_LINES} only, got {lambda0}; "
+                "use backend='torch' for other lines."
+            )
 
         if isinstance(lambda_axis, torch.Tensor):
             lambda_axis = lambda_axis.clone().detach().numpy()
