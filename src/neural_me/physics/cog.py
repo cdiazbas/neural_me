@@ -74,8 +74,12 @@ def cog_initial_conditions(
     U_int = np.sum(wavelengths**2 * U_flat, axis=-1)
     EqW = np.sum(Ic - I_flat, axis=-1)
 
-    # Factor: 1.5 * C**2 * Gg
-    factor = 1.5 * C**2 * line.Gg
+    # sum(lambda^2 Q) = k C^2 G Bt^2 cos(2 chi) EqW.  The weak-field
+    # approximation gives k = 0.5 exactly, but Milne-Eddington Q does not
+    # follow it: k ranges 0.6-1.1 for eta0 in [3, 100] and a in [0.1, 0.6]
+    # (up to 2 for a = 0).  k = 0.8 is the median of that range, which keeps
+    # Bt within -13 % / +18 % there.
+    factor = 0.8 * C**2 * line.Gg
 
     BtQ_sq = Q_int / (factor * EqW + 1e-12)
     BtU_sq = U_int / (factor * EqW + 1e-12)

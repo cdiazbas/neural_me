@@ -328,8 +328,8 @@ def test_c17_lorentzian_kernel_independent_of_support():
     assert core_energy(31) == pytest.approx(core_energy(101), rel=0.05)
 
 
-@xfail("C18", "COG Btrans factor 1.5 underestimates Bt by ~30 %")
 def test_c18_cog_recovers_transverse_field():
+    """C18 (fixed): the COG moment recovers Bt within 15 % on a typical ME profile."""
     from neural_me.physics.cog import cog_initial_conditions
 
     wl, st = _me_profile()
@@ -745,3 +745,17 @@ def test_c31_wfa_core_exclusion_scales_with_the_line():
         d = abs(np.degrees(0.5 * np.arctan2(bu, bq)) - np.degrees(x)) % 180
         chi_err.append(min(d, 180 - d))
     assert np.median(chi_err) < 1.0
+
+
+@pytest.mark.parametrize("eta0,a", [(3.0, 0.1), (10.0, 0.2), (30.0, 0.6), (100.0, 0.2)])
+def test_c18_cog_bt_within_20_percent_over_typical_range(eta0, a):
+    """C18 (fixed): Bt from the COG moment is within 20 % for photospheric eta0 and damping."""
+    from neural_me.physics.milne_eddington import MilneEddington
+    from neural_me.physics.cog import cog_initial_conditions
+
+    me = quiet(MilneEddington, line=6173)
+    wl = torch.linspace(-0.6, 0.6, 241, dtype=torch.float64)
+    p = torch.tensor([[150.0, np.pi / 2, 0.3, 0.0, eta0, a, 0.035, 0.2, 0.8]], dtype=torch.float64)
+    st = torch.stack(me(p, wl.expand(1, -1)), 1).detach().numpy()
+    _, bq, bu = (float(np.ravel(x)[0]) for x in cog_initial_conditions(wl.numpy(), st, line_id=7)[:3])
+    assert np.hypot(bq, bu) == pytest.approx(150.0, rel=0.2)
