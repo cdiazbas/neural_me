@@ -110,23 +110,40 @@ class CartesianAtmosphere(Atmosphere):
 
     @property
     def B(self) -> torch.Tensor:
+        return self._expand(self._field()[3])
+
+    def _field(self):
+        """Physical ``(Blos, BQ, BU, B)``; one place for the shared B."""
         Blos = self._Blos * self.norm["Blos"]
         BQ   = self._BQ   * self.norm["BQ"]
         BU   = self._BU   * self.norm["BU"]
         # Add eps inside sqrt to keep gradient finite when B→0
-        return self._expand(torch.sqrt(Blos**2 + BQ**2 + BU**2 + 1e-8))
+        B = torch.sqrt(Blos**2 + BQ**2 + BU**2 + 1e-8)
+        return Blos, BQ, BU, B
+
+    @staticmethod
+    def _gamma_from(Blos: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+        # Clamp ratio away from ±1 to keep acos gradient finite
+        ratio = torch.clamp(Blos / B, -1.0 + 1e-6, 1.0 - 1e-6)
+        return torch.acos(ratio)
 
     @property
     def gamma(self) -> torch.Tensor:
-        Blos = self._Blos * self.norm["Blos"]
-        BQ   = self._BQ   * self.norm["BQ"]
-        BU   = self._BU   * self.norm["BU"]
-        # Recompute B² directly — avoids the sqrt in the ratio (safer gradient)
-        B2 = Blos**2 + BQ**2 + BU**2 + 1e-8
-        B  = torch.sqrt(B2)
-        # Clamp ratio away from ±1 to keep acos gradient finite
-        ratio = torch.clamp(Blos / B, -1.0 + 1e-6, 1.0 - 1e-6)
-        return self._expand(torch.acos(ratio))
+        Blos, _, _, B = self._field()
+        return self._expand(self._gamma_from(Blos, B))
+
+    def to_stack(self) -> torch.Tensor:
+        """Stack of the 9 physical parameters, computing B once."""
+        Blos, BQ, BU, B = self._field()
+        return torch.stack(
+            [
+                self._expand(B),
+                self._expand(self._gamma_from(Blos, B)),
+                self._expand(0.5 * torch.atan2(BU, BQ + 1e-15)),
+                self.vlos, self.eta0, self.a, self.ddop, self.S0, self.S1,
+            ],
+            dim=-1,
+        )
 
     @property
     def xi(self) -> torch.Tensor:

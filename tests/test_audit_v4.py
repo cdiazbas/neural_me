@@ -197,8 +197,8 @@ def test_c08_nf_network_runs_once_per_stack():
     assert calls["n"] == 1
 
 
-@xfail("A01", "ViewAtmosphere._compute_magnetic runs once per B/gamma/xi")
 def test_a01_view_magnetic_computed_once():
+    """A01 (fixed): a view rotates the global field once per to_stack()."""
     from neural_me.core.atmospheres.stereoscopic import StereoscopicAtmosphere, ViewAtmosphere
 
     atm = quiet(StereoscopicAtmosphere, grid_shape=(4, 4))
@@ -628,3 +628,23 @@ def test_c29_cpp_warns_when_vlos_is_clipped():
         _w.simplefilter("always")
         quiet(me, p, wl)
     assert not [w for w in caught if "clipped" in str(w.message)]
+
+
+def test_a10_cartesian_field_computed_once_per_stack():
+    """A10 (fixed): CartesianAtmosphere.to_stack builds B once and matches the properties."""
+    from neural_me.core.atmospheres import CartesianAtmosphere
+
+    atm = quiet(CartesianAtmosphere, grid_shape=(3, 3))
+    calls = {"n": 0}
+    orig = atm._field
+
+    def counted():
+        calls["n"] += 1
+        return orig()
+
+    atm._field = counted
+    st = atm.to_stack()
+    assert calls["n"] == 1
+    atm._field = orig
+    assert torch.equal(st[..., 0], atm.B) and torch.equal(st[..., 1], atm.gamma)
+    assert torch.equal(st[..., 2], atm.xi)

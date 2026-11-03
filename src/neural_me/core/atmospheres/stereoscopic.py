@@ -544,6 +544,14 @@ class ViewAtmosphere(Atmosphere):
 
             return Btot, inc, azi
 
+    def to_stack(self) -> torch.Tensor:
+        """Stack of the 9 physical parameters, rotating the field once."""
+        B, gamma, xi = self._compute_magnetic()
+        return torch.stack(
+            [B, gamma, xi, self.vlos, self.eta0, self.a, self.ddop, self.S0, self.S1],
+            dim=-1,
+        )
+
     @property
     def B(self):
         return self._compute_magnetic()[0]
