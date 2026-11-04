@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 
 from .base import Atmosphere, half_atan2_azimuth
+from .nf_heads import ThermoHead
 from ..nf import MultiMLP, to_coordinates
 
 
@@ -33,7 +34,16 @@ class NFAtmosphere(Atmosphere):
         m_freqs: int = 512,
         sigma: Union[float, List[float], List[List[float]]] = 100.0,
         tune_beta: bool = False,
+        init: Optional[Dict[str, float]] = None,
+        bounds: Optional[str] = None,
     ):
+        """
+        ``init``: starting values of the thermodynamic parameters (any of vlos,
+        eta0, a, ddop, S0), reached when the network outputs 0, e.g. the medians
+        of a pixel-wise inversion. ``bounds="clamp"``: range of vlos, eta0, a and
+        ddop from DEFAULT_CLAMP_BOUNDS instead of the original ones. See
+        :mod:`neural_me.core.atmospheres.nf_heads`.
+        """
         super().__init__()
         self.grid_shape = grid_shape
         self.device = device or torch.device("cpu")
@@ -42,6 +52,7 @@ class NFAtmosphere(Atmosphere):
         self.norm = self.DEFAULT_NORMALIZATION.copy()
         if norm:
             self.norm.update(norm)
+        self.thermo_head = ThermoHead(self.norm, self.DEFAULT_CLAMP_BOUNDS, init=init, bounds=bounds)
 
         # Handle mask
         if mask is not None:
@@ -103,19 +114,9 @@ class NFAtmosphere(Atmosphere):
         gamma = torch.acos(ratio)
         xi = half_atan2_azimuth(BU, BQ)
 
-        # 2. Thermodynamics
-        # vlos: map to range using tanh
-        vlos = 10.0 * torch.tanh(out[:, 3]) * (self.norm["vlos"] / 2.0)
-        # eta0: sigmoid bounded
-        eta0 = torch.sigmoid(out[:, 4]) * self.norm["eta0"]
-        # a (damping): sigmoid bounded
-        a = (0.001 + 5.0 * torch.sigmoid(out[:, 5])) * self.norm["a"]
-        # ddop: sigmoid bounded
-        ddop = (0.01 + 0.2 * torch.sigmoid(out[:, 6])) * self.norm["ddop"]
-        
-        # 3. Source Functions
-        S0 = torch.sigmoid(out[:, 7]) * self.norm["S0"]
-        S1 = 1.0 - S0
+        # 2. Thermodynamics and source function (bounded maps, see nf_heads)
+        t = self.thermo_head(out[:, 3], out[:, 4], out[:, 5], out[:, 6], out[:, 7])
+        vlos, eta0, a, ddop, S0, S1 = t["vlos"], t["eta0"], t["a"], t["ddop"], t["S0"], t["S1"]
 
         return {
             "B": B, "gamma": gamma, "xi": xi,

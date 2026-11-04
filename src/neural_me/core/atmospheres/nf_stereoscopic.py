@@ -10,6 +10,7 @@ import torch.nn as nn
 
 from .base import Atmosphere
 from .local_vertical import LocalVerticalMixin
+from .nf_heads import ThermoHead
 from ..nf import MultiMLP, to_coordinates
 
 
@@ -43,7 +44,16 @@ class StereoscopicNFAtmosphere(LocalVerticalMixin, nn.Module):
         m_freqs: int = 512,
         sigma: Union[float, List[float], List[List[float]]] = 100.0,
         tune_beta: bool = False,
+        init: Optional[Dict[str, float]] = None,
+        bounds: Optional[str] = None,
     ):
+        """
+        ``init``: starting values of the thermodynamic parameters per view
+        (keys ``thermo1_<p>`` / ``thermo2_<p>`` for p in vlos, eta0, a, ddop,
+        S0), reached when the network outputs 0. ``bounds="clamp"``: ranges of
+        vlos, eta0, a, ddop from DEFAULT_STEREO_CLAMP_BOUNDS. See
+        :mod:`neural_me.core.atmospheres.nf_heads`.
+        """
         super().__init__()
         self.grid_shape = grid_shape
         self._init_device = device or torch.device("cpu")
@@ -62,6 +72,15 @@ class StereoscopicNFAtmosphere(LocalVerticalMixin, nn.Module):
 
         if norm:
             self._normalization.update(norm)
+        init = dict(init or {})
+        allowed = {f"thermo{i}_{n}" for i in (1, 2) for n in ("vlos", "eta0", "a", "ddop", "S0")}
+        if set(init) - allowed:
+            raise ValueError(f"unknown init keys {sorted(set(init) - allowed)}")
+        self._thermo_heads = {
+            i: ThermoHead(self._normalization, self.DEFAULT_CLAMP_BOUNDS, bounds=bounds, prefix=f"thermo{i}_",
+                          init={k: v for k, v in init.items() if k.startswith(f"thermo{i}_")})
+            for i in (1, 2)
+        }
         self._defaults = self.DEFAULT_PARAMETERS.copy()
         self.n_elements = int(np.prod(grid_shape))
         coords_all = to_coordinates(grid_shape, device=self.device)
@@ -151,12 +170,8 @@ class StereoscopicNFAtmosphere(LocalVerticalMixin, nn.Module):
         offset = 3 if index == 1 else 8
         prefix = f"thermo{1 if index == 1 else 2}_"
         
-        vlos = 10.0 * torch.tanh(out[:, offset]) * (self._normalization[prefix + "vlos"] / 2.0)
-        eta0 = torch.sigmoid(out[:, offset + 1]) * self._normalization[prefix + "eta0"]
-        a = (0.001 + 5.0 * torch.sigmoid(out[:, offset + 2])) * self._normalization[prefix + "a"]
-        ddop = (0.01 + 0.2 * torch.sigmoid(out[:, offset + 3])) * self._normalization[prefix + "ddop"]
-        S0 = torch.sigmoid(out[:, offset + 4]) * self._normalization[prefix + "S0"]
-        S1 = 1.0 - S0
+        t = self._thermo_heads[index](*(out[:, offset + k] for k in range(5)))
+        vlos, eta0, a, ddop, S0, S1 = t["vlos"], t["eta0"], t["a"], t["ddop"], t["S0"], t["S1"]
 
         return {
             "B": self._expand(Btot),
