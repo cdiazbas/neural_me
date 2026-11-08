@@ -13,6 +13,7 @@ from neural_me.core.geometry import (
     local_vertical_matrix,
     local_vertical_matrix_from_map,
     apply_local_vertical,
+    instrument_sampling_grid,
 )
 from neural_me.core.atmospheres import (
     Atmosphere,
@@ -56,5 +57,6 @@ __all__ = [
     "local_vertical_matrix",
     "local_vertical_matrix_from_map",
     "apply_local_vertical",
+    "instrument_sampling_grid",
 ]
 

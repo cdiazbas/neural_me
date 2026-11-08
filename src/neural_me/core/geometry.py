@@ -123,6 +123,7 @@ __all__ = [
     "local_vertical_matrix",
     "local_vertical_matrix_from_map",
     "apply_local_vertical",
+    "instrument_sampling_grid",
 ]
 
 
@@ -374,3 +375,95 @@ def apply_local_vertical(B_los, B_n, B_w, rotation):
     rotation = rotation.to(device=vec.device, dtype=vec.dtype)
     out = torch.einsum("...ij,...j->...i", rotation, vec)
     return out[..., 0], out[..., 1], out[..., 2]
+
+
+def instrument_sampling_grid(instrument_map, model_wcs, model_shape, crop_shape=None, n_sub=3, margin=2):
+    """Where each pixel of an instrument falls on the grid of the model.
+
+    The sampling grid for comparing a model with an instrument in its own pixels,
+    the input of :class:`~neural_me.optimization.degradation.SparseWarpOperator`.
+    It is pure geometry from the two WCS: sunpy places every point on the solar
+    sphere, so the map knows neither the Wilson depression nor the formation
+    height. Pixels off the disc of the instrument come out as not valid.
+
+    Parameters
+    ----------
+    instrument_map : sunpy.map.GenericMap
+        A map with the pixels of the instrument.
+    model_wcs : astropy.wcs.WCS
+        WCS of the model grid, with its observer.
+    model_shape : (int, int)
+        (ny, nx) of the model grid.
+    crop_shape : (int, int), optional
+        (H, W) of a crop of the instrument, centred on the pixels that fall on the
+        model grid and shifted if needed to stay inside the image. Default: no crop.
+    n_sub : int
+        Samples per axis inside each pixel, to integrate its footprint.
+    margin : float
+        Pixels of the model grid at its border that do not count as valid.
+
+    Returns
+    -------
+    dict
+        ``grid`` (H, W, 2) at the pixel centres and ``grid_sub`` (H, W, n_sub**2, 2)
+        inside each pixel, (x, y) normalised with align_corners=True, float32;
+        ``valid`` (H, W), the pixels whose centres lie inside the model grid without
+        its margin and whose samples are all defined; ``r0``, ``c0``, the origin of the crop; ``footprint``,
+        the median singular values of the Jacobian over the pixels on the grid: the
+        size of one pixel in model pixels along its major and minor axes.
+    """
+    _require_sunpy()
+    ny_m, nx_m = model_shape
+
+    def to_model(x, y):
+        px, py = model_wcs.world_to_pixel(instrument_map.wcs.pixel_to_world(np.ravel(x), np.ravel(y)))
+        return np.asarray(px).reshape(np.shape(x)), np.asarray(py).reshape(np.shape(y))
+
+    ny, nx = instrument_map.data.shape[-2:]
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    mx, my = to_model(xx, yy)
+    with np.errstate(invalid="ignore"):
+        inside = (mx > -0.5) & (mx < nx_m - 0.5) & (my > -0.5) & (my < ny_m - 0.5)
+    if not inside.any():
+        raise ValueError("no pixel of the instrument falls on the model grid")
+
+    iy, ix = np.where(inside)
+    H, W = (ny, nx) if crop_shape is None else crop_shape
+    if H > ny or W > nx:
+        raise ValueError(f"crop {(H, W)} is larger than the image {(ny, nx)}")
+    r0 = 0 if crop_shape is None else int(np.clip((iy.min() + iy.max()) // 2 - H // 2, 0, ny - H))
+    c0 = 0 if crop_shape is None else int(np.clip((ix.min() + ix.max()) // 2 - W // 2, 0, nx - W))
+
+    with np.errstate(invalid="ignore"):
+        J = np.stack([[np.gradient(mx, axis=1), np.gradient(mx, axis=0)],
+                      [np.gradient(my, axis=1), np.gradient(my, axis=0)]])[:, :, inside]
+    J = np.moveaxis(J, -1, 0)
+    J = J[np.isfinite(J).all(axis=(1, 2))]
+    footprint = np.median(np.linalg.svd(J, compute_uv=False), axis=0)
+
+    def normalise(px, py):
+        return np.stack([2 * px / (nx_m - 1) - 1, 2 * py / (ny_m - 1) - 1], axis=-1).astype(np.float32)
+
+    cx, cy = mx[r0:r0 + H, c0:c0 + W], my[r0:r0 + H, c0:c0 + W]
+    with np.errstate(invalid="ignore"):
+        valid = (cx > margin) & (cx < nx_m - 1 - margin) & (cy > margin) & (cy < ny_m - 1 - margin)
+
+    gy, gx = np.mgrid[r0:r0 + H, c0:c0 + W].astype(np.float64)
+    offsets = (np.arange(n_sub) + 0.5) / n_sub - 0.5
+    grid_sub = np.zeros((H, W, n_sub * n_sub, 2), np.float32)
+    k = 0
+    for dy in offsets:
+        for dx in offsets:
+            grid_sub[..., k, :] = normalise(*to_model(gx + dx, gy + dy))
+            k += 1
+    valid &= np.isfinite(grid_sub).all(axis=(2, 3))
+
+    outside = 2.0                              # beyond [-1, 1]: no sample, weight 0
+    return {
+        "grid": np.nan_to_num(normalise(cx, cy), nan=outside),
+        "grid_sub": np.nan_to_num(grid_sub, nan=outside),
+        "valid": valid,
+        "r0": r0,
+        "c0": c0,
+        "footprint": footprint,
+    }
