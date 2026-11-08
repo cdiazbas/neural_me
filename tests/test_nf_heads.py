@@ -17,26 +17,25 @@ def quiet(fn, *a, **k):
 
 NORM = Atmosphere.DEFAULT_NORMALIZATION
 BOUNDS = Atmosphere.DEFAULT_CLAMP_BOUNDS
-INIT = {"vlos": 0.21, "eta0": 12.9, "a": 0.23, "ddop": 0.037, "S0": 0.31}
+INIT = {"vlos": 0.21, "eta0": 12.9, "a": 0.23, "ddop": 0.037, "S0": 0.31, "S1": 0.74}
 
 
 @pytest.mark.parametrize("bounds", [None, "clamp"])
 def test_zero_output_gives_the_initial_values(bounds):
     head = ThermoHead(NORM, BOUNDS, init=INIT, bounds=bounds)
     zero = torch.zeros(3, dtype=torch.float64)
-    out = head(*(zero for _ in NAMES))
+    out = head(*(zero for _ in NAMES[:5]), o_S1=zero)
     for k, v in INIT.items():
         assert torch.allclose(out[k], torch.full_like(zero, v), rtol=1e-6)
-    assert torch.allclose(out["S1"], 1 - out["S0"])
 
 
 @pytest.mark.parametrize("bounds", [None, "clamp"])
 def test_outputs_stay_inside_their_ranges(bounds):
     head = ThermoHead(NORM, BOUNDS, init=INIT, bounds=bounds)
     big = torch.tensor([-1e3, -10.0, 0.0, 10.0, 1e3], dtype=torch.float64)
-    out = head(*(big for _ in NAMES))
+    out = head(*(big for _ in NAMES[:5]), o_S1=big)
     assert out["vlos"].abs().max() <= head.amp
-    for k in ("eta0", "a", "ddop", "S0"):
+    for k in ("eta0", "a", "ddop", "S0", "S1"):
         lo, hi = head.range[k]
         assert out[k].min() >= lo and out[k].max() <= hi
 
@@ -44,7 +43,7 @@ def test_outputs_stay_inside_their_ranges(bounds):
 def test_clamp_bounds_reach_the_pixel_range():
     head = ThermoHead(NORM, BOUNDS, init={"eta0": 185.0}, bounds="clamp")
     assert head.range["eta0"] == BOUNDS["eta0"]
-    assert float(head(*(torch.zeros(1) for _ in NAMES))["eta0"]) == pytest.approx(185.0, rel=1e-5)
+    assert float(head(*(torch.zeros(1) for _ in NAMES[:5]), o_S1=torch.zeros(1))["eta0"]) == pytest.approx(185.0, rel=1e-5)
     legacy = ThermoHead(NORM, BOUNDS)
     assert legacy.range["eta0"][1] == NORM["eta0"] < 185.0
 
@@ -76,3 +75,31 @@ def test_stereo_nf_views_get_their_own_init():
     e1 = float(atm.get_atmosphere(1).to_stack()[..., 4].median())
     e2 = float(atm.get_atmosphere(2).to_stack()[..., 4].median())
     assert e2 > 3 * e1
+
+
+def test_unit_source_is_gone_and_continuum_needs_the_map():
+    with pytest.raises(ValueError, match="source"):
+        ThermoHead(NORM, BOUNDS, source="unit")
+    head = ThermoHead(NORM, BOUNDS, source="continuum", init={"S0": 0.25})
+    z = torch.zeros(4)
+    with pytest.raises(ValueError, match="continuum map"):
+        head(z, z, z, z, z)
+    ic = torch.tensor([0.2, 0.5, 1.0, 1.1])
+    out = head(z, z, z, z, z, ic=ic)
+    assert torch.allclose(out["S0"] + out["S1"], ic) and torch.allclose(out["S0"], 0.25 * ic, rtol=1e-5)
+
+
+@pytest.mark.parametrize("source,n_out", [("free", 15), ("continuum", 13)])
+def test_stereo_nf_layout_and_source(source, n_out):
+    torch.manual_seed(0)
+    ic = (torch.rand(6, 6) + 0.2, torch.rand(6, 6) + 0.2) if source == "continuum" else None
+    atm = quiet(StereoscopicNFAtmosphere, grid_shape=(6, 6), m_freqs=8, dim_hidden=8, num_resnet_blocks=1,
+                sigma=[1.0] * 13, source=source, continuum=ic, bounds="clamp",
+                init={"thermo1_S0": 0.3, "thermo2_S0": 0.6})
+    assert atm.NF(atm.coords).shape[-1] == n_out
+    for i in (1, 2):
+        st = atm.get_atmosphere(i).to_stack().detach()
+        if source == "continuum":
+            assert torch.allclose(st[..., 7] + st[..., 8], ic[i - 1], rtol=1e-5)
+        else:
+            assert not torch.allclose(st[..., 7] + st[..., 8], torch.ones(6, 6))

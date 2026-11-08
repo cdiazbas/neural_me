@@ -379,8 +379,8 @@ def test_c19_stereo_clamp_uses_storage_normalization():
     assert float(atm.get_atmosphere(1).eta0.mean()) == pytest.approx(500.0, rel=1e-3)
 
 
-@xfail("C20", "NF atmosphere S1 = 1 - S0 ignores norm['S1'] and goes negative")
 def test_c20_nf_source_function_positive():
+    """C20 (fixed): S1 is its own bounded output (source="free"), not 1 - S0."""
     from neural_me.core.atmospheres import NFAtmosphere
 
     atm = quiet(NFAtmosphere, grid_shape=(4, 4), m_freqs=16, dim_hidden=8,

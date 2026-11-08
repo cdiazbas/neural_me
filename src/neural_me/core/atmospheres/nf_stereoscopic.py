@@ -10,8 +10,8 @@ import torch.nn as nn
 
 from .base import Atmosphere
 from .local_vertical import LocalVerticalMixin
-from .nf_heads import ThermoHead
-from ..nf import MultiMLP, to_coordinates
+from .nf_heads import ThermoHead, n_outputs
+from ..nf import GridField, MultiMLP, to_coordinates
 
 
 class StereoscopicNFAtmosphere(LocalVerticalMixin, nn.Module):
@@ -46,13 +46,29 @@ class StereoscopicNFAtmosphere(LocalVerticalMixin, nn.Module):
         tune_beta: bool = False,
         init: Optional[Dict[str, float]] = None,
         bounds: Optional[str] = None,
+        source: str = "free",
+        continuum: Optional[Tuple[Any, Any]] = None,
+        encoding: str = "fourier",
+        grid_kwargs: Optional[Dict[str, Any]] = None,
     ):
         """
         ``init``: starting values of the thermodynamic parameters per view
         (keys ``thermo1_<p>`` / ``thermo2_<p>`` for p in vlos, eta0, a, ddop,
         S0), reached when the network outputs 0. ``bounds="clamp"``: ranges of
-        vlos, eta0, a, ddop from DEFAULT_STEREO_CLAMP_BOUNDS. See
+        vlos, eta0, a, ddop, S0, S1 from DEFAULT_STEREO_CLAMP_BOUNDS. See
         :mod:`neural_me.core.atmospheres.nf_heads`.
+
+        ``source="free"`` (default): S0 and S1 of each view are independent
+        network outputs (15 outputs: 3 global B + 6 per view). ``"continuum"``:
+        S0 + S1 of view i is the observed continuum map ``continuum[i - 1]``
+        (grid_shape each) and the network fits S0 / (S0 + S1) (13 outputs).
+        A 13-entry ``sigma`` list (the old layout) gets S1 the sigma of S0.
+
+        ``encoding="fourier"`` (default): MultiMLP with Fourier features.
+        ``encoding="grid"``: :class:`GridField` (multi-resolution grids, ~50x
+        cheaper; ``grid_kwargs`` go to it). Default groups: the global field
+        and vlos, S0, S1 of both views up to the map resolution, eta0, a, ddop
+        of both views up to half of it (the sigma 100 / 40 split).
         """
         super().__init__()
         self.grid_shape = grid_shape
@@ -73,23 +89,53 @@ class StereoscopicNFAtmosphere(LocalVerticalMixin, nn.Module):
         if norm:
             self._normalization.update(norm)
         init = dict(init or {})
-        allowed = {f"thermo{i}_{n}" for i in (1, 2) for n in ("vlos", "eta0", "a", "ddop", "S0")}
+        allowed = {f"thermo{i}_{n}" for i in (1, 2) for n in ("vlos", "eta0", "a", "ddop", "S0", "S1")}
         if set(init) - allowed:
             raise ValueError(f"unknown init keys {sorted(set(init) - allowed)}")
         self._thermo_heads = {
             i: ThermoHead(self._normalization, self.DEFAULT_CLAMP_BOUNDS, bounds=bounds, prefix=f"thermo{i}_",
-                          init={k: v for k, v in init.items() if k.startswith(f"thermo{i}_")})
+                          init={k: v for k, v in init.items() if k.startswith(f"thermo{i}_")}, source=source)
             for i in (1, 2)
         }
+        self.source = source
+        self._n_view = n_outputs(source)             # outputs per view
+        if (source == "continuum") != (continuum is not None):
+            raise ValueError('continuum maps (view 1, view 2) are needed with source="continuum", and only then')
+        if continuum is not None:
+            for i, ic in zip((1, 2), continuum):
+                ic = torch.as_tensor(np.asarray(ic), dtype=torch.float32, device=self.device)
+                if tuple(ic.shape) != tuple(grid_shape):
+                    raise ValueError(f"continuum {i} has shape {tuple(ic.shape)}, expected {tuple(grid_shape)}")
+                self.register_buffer(f"continuum{i}", ic.reshape(-1))
+        if source == "free" and isinstance(sigma, list) and len(sigma) == 13:
+            sigma = sigma[:8] + [sigma[7]] + sigma[8:] + [sigma[12]]
         self._defaults = self.DEFAULT_PARAMETERS.copy()
         self.n_elements = int(np.prod(grid_shape))
         coords_all = to_coordinates(grid_shape, device=self.device)
         self.register_buffer("coords", coords_all)
 
-        # Define NF (13 parameter channels)
+        # Define NF (3 global B channels + thermodynamics of each view)
+        n_out = 3 + 2 * self._n_view
+        if encoding not in ("fourier", "grid"):
+            raise ValueError(f"encoding must be 'fourier' or 'grid', got {encoding!r}")
+        self.encoding = encoding
+        if encoding == "grid":
+            if len(grid_shape) != 2:
+                raise ValueError("encoding='grid' needs a 2-D grid")
+            n = max(grid_shape)
+            slow = tuple(3 + v * self._n_view + k for v in (0, 1) for k in (1, 2, 3))   # eta0, a, ddop
+            fast = tuple(c for c in range(n_out) if c not in slow)
+            kw = dict(groups=[(fast, n), (slow, n // 2)], activation=activation,
+                      zero_init=tuple(range(3, n_out)))
+            kw.update(grid_kwargs or {})
+            self.NF = GridField(grid_shape, dim_out=n_out, **kw).to(self.device)
+            print(f"StereoscopicNFAtmosphere initialized | Grid: {self.grid_shape} | γ={gamma:.1f}°, β={beta:.1f}°, "
+                  f"δ={delta:.1f}° | encoding: grid, source: {source}, "
+                  f"{sum(p.numel() for p in self.NF.parameters())} params")
+            return
         self.NF = MultiMLP(
             dim_in=len(grid_shape),
-            dim_out=13,
+            dim_out=n_out,
             num_resnet_blocks=num_resnet_blocks,
             num_layers_per_block=num_layers_per_block,
             dim_hidden=dim_hidden,
@@ -115,9 +161,13 @@ class StereoscopicNFAtmosphere(LocalVerticalMixin, nn.Module):
     def _expand(self, tensor: torch.Tensor) -> torch.Tensor:
         return tensor.view(*self.grid_shape)
 
+    def _net(self) -> torch.Tensor:
+        """Network outputs on the pixel grid, (n_pixels, n_outputs)."""
+        return self.NF() if getattr(self, "encoding", "fourier") == "grid" else self.NF(self.coords)
+
     def _global_B(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Hook for LocalVerticalMixin: global field in the reference LOS frame."""
-        out = self.NF(self.coords)
+        out = self._net()
         return (
             self._expand(5.0 * out[:, 0] * self._normalization["global_Blos"]),
             self._expand(5.0 * out[:, 1] * self._normalization["global_Bn"]),
@@ -132,7 +182,7 @@ class StereoscopicNFAtmosphere(LocalVerticalMixin, nn.Module):
         lets several views share one evaluation.
         """
         if out is None:
-            out = self.NF(self.coords)
+            out = self._net()
         
         # 1. Global Cartesian Magnetic Field Components
         Blos = 5.0 * out[:, 0] * self._normalization["global_Blos"]
@@ -167,10 +217,11 @@ class StereoscopicNFAtmosphere(LocalVerticalMixin, nn.Module):
             azi = torch.atan2(Bn_new, Bw_new) + self.delta_rad
 
         # 2. Thermodynamics
-        offset = 3 if index == 1 else 8
-        prefix = f"thermo{1 if index == 1 else 2}_"
-        
-        t = self._thermo_heads[index](*(out[:, offset + k] for k in range(5)))
+        offset = 3 if index == 1 else 3 + self._n_view
+        t = self._thermo_heads[index](
+            *(out[:, offset + k] for k in range(5)),
+            o_S1=out[:, offset + 5] if self.source == "free" else None,
+            ic=getattr(self, f"continuum{index}", None))
         vlos, eta0, a, ddop, S0, S1 = t["vlos"], t["eta0"], t["a"], t["ddop"], t["S0"], t["S1"]
 
         return {
@@ -205,7 +256,7 @@ class StereoscopicNFAtmosphere(LocalVerticalMixin, nn.Module):
 
         Shape: (..., 15)
         """
-        out = self.NF(self.coords)
+        out = self._net()
         Blos = self._expand(5.0 * out[:, 0] * self._normalization["global_Blos"])
         Bn   = self._expand(5.0 * out[:, 1] * self._normalization["global_Bn"])
         Bw   = self._expand(5.0 * out[:, 2] * self._normalization["global_Bw"])

@@ -143,3 +143,87 @@ class MultiMLP(nn.Module):
         # Evaluate each network and stack outputs
         outs = [net(x).squeeze(dim=-1) for net in self.multi_net]
         return torch.stack(outs, dim=-1)
+
+
+class GridField(nn.Module):
+    """Multi-resolution feature grids with a small per-pixel head, for a 2-D map.
+
+    Dense version of the hash encoding of neural_wfa (``HashMLP``, version 1;
+    Mueller et al. 2022): each level is a learnable ``(F, ry, rx)`` grid, the
+    levels go geometrically from ``base_res`` to ``max_res``, and a map of size
+    (ny, nx) <= 512 needs no hashing. Because the field is only evaluated on
+    the pixel grid, the bilinear lookup is a bilinear upsampling of each level
+    (``F.interpolate``, align_corners=True, same as sampling the [-1, 1]
+    coordinates of :func:`to_coordinates`), and the head is a stack of 1x1
+    convolutions. Cost per evaluation is ~0.1-0.3 s on a 512x512 map (CPU),
+    against ~10 s for :class:`MultiMLP` with m_freqs=512.
+
+    ``groups``: list of ``(output_channels, max_res)``; each group has its own
+    grids and head, so a group with a lower ``max_res`` is spatially smoother
+    (the role of the per-output ``sigma`` of MultiMLP).
+    ``zero_init``: output channels whose last-layer weights and bias start at
+    zero, so they output exactly 0 at the start (the ``init`` values of
+    :class:`~neural_me.core.atmospheres.nf_heads.ThermoHead`). Do not zero the
+    transverse-field channels: Q and U are quadratic in them, so at exactly 0
+    their gradient vanishes and they never move.
+    """
+
+    def __init__(self, grid_shape: Tuple[int, int], dim_out: int = 8,
+                 groups: Optional[List[Tuple[Tuple[int, ...], int]]] = None,
+                 n_levels: int = 12, base_res: int = 4, features_per_level: int = 4,
+                 dim_hidden: int = 32, num_layers: int = 2,
+                 activation: nn.Module = nn.GELU(), init_scale: float = 1e-4,
+                 zero_init: Tuple[int, ...] = ()):
+        super().__init__()
+        if len(grid_shape) != 2:
+            raise ValueError(f"GridField needs a 2-D grid, got {grid_shape}")
+        self.grid_shape = tuple(int(s) for s in grid_shape)
+        self.dim_out = dim_out
+        if groups is None:
+            groups = [(tuple(range(dim_out)), max(self.grid_shape))]
+        covered = sorted(c for ch, _ in groups for c in ch)
+        if covered != list(range(dim_out)):
+            raise ValueError(f"groups must cover channels 0..{dim_out - 1} once, got {covered}")
+        self.groups = [(tuple(ch), int(mr)) for ch, mr in groups]
+        self.levels = nn.ModuleList()
+        self.heads = nn.ModuleList()
+        for _, max_res in self.groups:
+            res = self.resolutions(base_res, max_res, n_levels)
+            grids = nn.ParameterList([
+                nn.Parameter(torch.empty(1, features_per_level, ry, rx).uniform_(-init_scale, init_scale))
+                for ry, rx in res])
+            self.levels.append(grids)
+        for ch, _ in self.groups:
+            dim_in = n_levels * features_per_level
+            layers = [nn.Conv2d(dim_in, dim_hidden, 1), activation]
+            for _ in range(num_layers - 1):
+                layers += [nn.Conv2d(dim_hidden, dim_hidden, 1), activation]
+            last = nn.Conv2d(dim_hidden, len(ch), 1)
+            with torch.no_grad():
+                for k, c in enumerate(ch):
+                    if c in zero_init:
+                        last.weight[k].zero_()
+                        last.bias[k].zero_()
+            self.heads.append(nn.Sequential(*layers, last))
+
+    def resolutions(self, base_res: int, max_res: int, n_levels: int) -> List[Tuple[int, int]]:
+        """(ry, rx) per level: geometric in [base_res, max_res], capped at the map size."""
+        ny, nx = self.grid_shape
+        b = (max_res / base_res) ** (1.0 / max(n_levels - 1, 1))
+        out = []
+        for i in range(n_levels):
+            r = base_res * b ** i
+            out.append((max(2, min(ny, int(round(r)))), max(2, min(nx, int(round(r))))))
+        return out
+
+    def forward(self) -> torch.Tensor:
+        """(ny * nx, dim_out) outputs in the row-major order of :func:`to_coordinates`."""
+        ny, nx = self.grid_shape
+        out = [None] * self.dim_out
+        for (ch, _), grids, head in zip(self.groups, self.levels, self.heads):
+            feat = torch.cat([nn.functional.interpolate(g, size=(ny, nx), mode="bilinear", align_corners=True)
+                              for g in grids], dim=1)
+            y = head(feat)[0]                         # (len(ch), ny, nx)
+            for k, c in enumerate(ch):
+                out[c] = y[k].reshape(-1)
+        return torch.stack(out, dim=-1)
