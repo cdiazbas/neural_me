@@ -8,6 +8,8 @@ from neural_me.optimization.degradation import (
     SpatialPSFOperator,
     SpectralPSFOperator,
     WarpOperator,
+    SparseWarpOperator,
+    ComposeOperator,
     TwoPSFOperator,
     ExtendedPSFOperator,
 )
@@ -22,6 +24,8 @@ __all__ = [
     "SpatialPSFOperator",
     "SpectralPSFOperator",
     "WarpOperator",
+    "SparseWarpOperator",
+    "ComposeOperator",
     "TwoPSFOperator",
     "ExtendedPSFOperator",
 ]
