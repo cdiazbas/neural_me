@@ -29,6 +29,7 @@ class StereoSolver:
         lr: float = 1e-2,
         alpha: float = 0.5,
         degradation_operators: Optional[Dict[int, DegradationOperator]] = None,
+        balance: str = "fixed",
     ):
         """
         Args:
@@ -38,7 +39,15 @@ class StereoSolver:
             lr: Learning rate.
             alpha: Weighting factor for loss: (1-alpha)*L1 + alpha*L2.
             degradation_operators: Dict mapping view index (1 or 2) to a DegradationOperator.
+            balance: "fixed" (default) minimises (1-alpha)*L1 + alpha*L2.
+                "dynamic" divides each term by its current value (detached),
+                i.e. follows the gradient of (1-alpha)*log L1 + alpha*log L2:
+                both views pull with the same relative strength whatever
+                their absolute chi2 (the reported loss is still the fixed sum).
         """
+        if balance not in ("fixed", "dynamic"):
+            raise ValueError(f"balance must be 'fixed' or 'dynamic', got {balance!r}")
+        self.balance = balance
         self.atmosphere = atmosphere
         self.problem1 = problem1
         self.problem2 = problem2
@@ -71,6 +80,7 @@ class StereoSolver:
         lines.append(row(f"    - Telescope 1    : {1.0 - self.alpha:.3f}"))
         lines.append(row(f"    - Telescope 2    : {self.alpha:.3f}"))
         lines.append(row(f"  Learning Rate      : {lr}"))
+        lines.append(row(f"  Loss balance       : {balance} (alpha={alpha})"))
 
         for inst_idx, prob, name in [(1, self.problem1, "Telescope 1 (Reference View)"),
                                      (2, self.problem2, "Telescope 2 (Secondary View)")]:
@@ -118,10 +128,18 @@ class StereoSolver:
         verbose: bool = True,
         normalize_gradients: bool = False,
         return_breakdown: bool = False,
+        warmup: int = 0,
     ) -> Union[List[float], Tuple[List[float], List[float], List[float]]]:
         """
         Runs the optimization loop.
+
+        ``warmup``: the learning rate rises linearly from lr / warmup to lr over
+        the first ``warmup`` iterations. Use it after a warm start: Adam's first
+        step moves every parameter by ~lr whatever its gradient, which on a
+        2.3 M-parameter grid field undoes much of the start (B_w correlation with
+        the warm-start maps 0.999 -> 0.856 after one step at lr 1e-2).
         """
+        base_lr = [g["lr"] for g in self.optimizer.param_groups]
         self.atmosphere.train()
         losses = []
         losses1 = []
@@ -132,6 +150,10 @@ class StereoSolver:
             iterator = tqdm(iterator, desc="Stereo Inversion")
 
         for i in iterator:
+            if warmup > 0:
+                f = min(1.0, (i + 1) / warmup)
+                for g, lr0 in zip(self.optimizer.param_groups, base_lr):
+                    g["lr"] = lr0 * f
             self.optimizer.zero_grad()
 
             # 1. Get Views
@@ -155,7 +177,12 @@ class StereoSolver:
             # Combined Loss
             loss = (1.0 - self.alpha) * loss1 + self.alpha * loss2
 
-            loss.backward()
+            if self.balance == "dynamic":
+                objective = ((1.0 - self.alpha) * loss1 / (loss1.detach() + 1e-30)
+                             + self.alpha * loss2 / (loss2.detach() + 1e-30))
+                objective.backward()
+            else:
+                loss.backward()
 
             # Optional Gradient Normalization
             if normalize_gradients:
