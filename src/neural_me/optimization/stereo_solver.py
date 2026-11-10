@@ -11,7 +11,7 @@ import contextlib
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-from typing import Optional, List, Tuple, Dict, Union
+from typing import Callable, Optional, List, Tuple, Dict, Union
 
 from ..core.atmospheres.stereoscopic import StereoscopicAtmosphere
 from ..core import MEProblem
@@ -32,6 +32,7 @@ class StereoSolver:
         alpha: float = 0.5,
         degradation_operators: Optional[Dict[int, DegradationOperator]] = None,
         balance: str = "fixed",
+        penalty: Optional[Callable[[StereoscopicAtmosphere], torch.Tensor]] = None,
     ):
         """
         Args:
@@ -46,6 +47,14 @@ class StereoSolver:
                 i.e. follows the gradient of (1-alpha)*log L1 + alpha*log L2:
                 both views pull with the same relative strength whatever
                 their absolute chi2 (the reported loss is still the fixed sum).
+            penalty: optional f(atmosphere) -> scalar, added to the objective with
+                its own weight inside (not scaled by alpha, not balanced), e.g.
+                ``lambda atm: 1e-3 * log_prior(atm.get_atmosphere(2).eta0, 50.0)``
+                (regularization.priors). It reads the maps from the same network
+                evaluation as the synthesis. Its values per step are kept in
+                ``self.penalties``; the reported losses stay the data terms.
+                (Unrelated to MEProblem.regularization_weights, which this solver
+                still ignores: audit v4 C06.)
         """
         if balance not in ("fixed", "dynamic"):
             raise ValueError(f"balance must be 'fixed' or 'dynamic', got {balance!r}")
@@ -55,6 +64,8 @@ class StereoSolver:
         self.problem2 = problem2
         self.alpha = alpha
         self.degradation_operators = degradation_operators or {}
+        self.penalty = penalty
+        self.penalties: List[float] = []
 
         # Collect parameters to optimize (atmosphere parameters + any trainable operator parameters)
         params = list(self.atmosphere.parameters())
@@ -186,9 +197,13 @@ class StereoSolver:
                 if self.balance == "dynamic":
                     objective = ((1.0 - self.alpha) * loss1 / (loss1.detach() + 1e-30)
                                  + self.alpha * loss2 / (loss2.detach() + 1e-30))
-                    objective.backward()
                 else:
-                    loss.backward()
+                    objective = loss
+                if self.penalty is not None:
+                    pen = self.penalty(self.atmosphere)
+                    self.penalties.append(float(pen))
+                    objective = objective + pen
+                objective.backward()
 
             # Optional Gradient Normalization
             if normalize_gradients:
