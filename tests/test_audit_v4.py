@@ -374,9 +374,10 @@ def test_c19_stereo_clamp_uses_storage_normalization():
 
     atm = quiet(StereoscopicAtmosphere, grid_shape=(2, 2))
     atm._normalization["eta0"] = 10.0
-    atm.set_parameters({"thermo1_eta0": np.full((2, 2), 500.0)})
+    value = 0.75 * atm.DEFAULT_CLAMP_BOUNDS["thermo1_eta0"][1]   # inside the physical bound, >> 10
+    atm.set_parameters({"thermo1_eta0": np.full((2, 2), value)})
     atm.clamp_parameters()
-    assert float(atm.get_atmosphere(1).eta0.mean()) == pytest.approx(500.0, rel=1e-3)
+    assert float(atm.get_atmosphere(1).eta0.mean()) == pytest.approx(value, rel=1e-3)
 
 
 def test_c20_nf_source_function_positive():
