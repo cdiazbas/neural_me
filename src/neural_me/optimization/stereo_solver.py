@@ -6,6 +6,8 @@ MEProblems (Instruments). Includes support for Stray Light correction on
 the second instrument.
 """
 
+import contextlib
+
 import torch
 import torch.nn as nn
 from tqdm import tqdm
@@ -156,33 +158,37 @@ class StereoSolver:
                     g["lr"] = lr0 * f
             self.optimizer.zero_grad()
 
-            # 1. Get Views
-            atm1 = self.atmosphere.get_atmosphere(1)
-            atm2 = self.atmosphere.get_atmosphere(2)
+            # Steps 1-4 inside one network evaluation (StepCacheMixin): the synthesis of both views and every
+            # loss term that reads the maps share it; closed before the parameters change.
+            _cache = self.atmosphere.step_cache() if hasattr(self.atmosphere, "step_cache") else contextlib.nullcontext()
+            with _cache:
+                # 1. Get Views
+                atm1 = self.atmosphere.get_atmosphere(1)
+                atm2 = self.atmosphere.get_atmosphere(2)
 
-            # 2. Forward Pass (Compute Spectra)
-            syn1 = self.problem1.compute_forward_model(atm1)
-            syn2 = self.problem2.compute_forward_model(atm2)
+                # 2. Forward Pass (Compute Spectra)
+                syn1 = self.problem1.compute_forward_model(atm1)
+                syn2 = self.problem2.compute_forward_model(atm2)
 
-            # 3. Apply Degradation (Stray Light / Calibration)
-            if 1 in self.degradation_operators:
-                syn1 = self.degradation_operators[1](syn1, self.atmosphere)
-            if 2 in self.degradation_operators:
-                syn2 = self.degradation_operators[2](syn2, self.atmosphere)
+                # 3. Apply Degradation (Stray Light / Calibration)
+                if 1 in self.degradation_operators:
+                    syn1 = self.degradation_operators[1](syn1, self.atmosphere)
+                if 2 in self.degradation_operators:
+                    syn2 = self.degradation_operators[2](syn2, self.atmosphere)
 
-            # 4. Compute Loss
-            loss1 = self.problem1.compute_loss_from_syn(syn1)
-            loss2 = self.problem2.compute_loss_from_syn(syn2)
+                # 4. Compute Loss
+                loss1 = self.problem1.compute_loss_from_syn(syn1)
+                loss2 = self.problem2.compute_loss_from_syn(syn2)
 
-            # Combined Loss
-            loss = (1.0 - self.alpha) * loss1 + self.alpha * loss2
+                # Combined Loss
+                loss = (1.0 - self.alpha) * loss1 + self.alpha * loss2
 
-            if self.balance == "dynamic":
-                objective = ((1.0 - self.alpha) * loss1 / (loss1.detach() + 1e-30)
-                             + self.alpha * loss2 / (loss2.detach() + 1e-30))
-                objective.backward()
-            else:
-                loss.backward()
+                if self.balance == "dynamic":
+                    objective = ((1.0 - self.alpha) * loss1 / (loss1.detach() + 1e-30)
+                                 + self.alpha * loss2 / (loss2.detach() + 1e-30))
+                    objective.backward()
+                else:
+                    loss.backward()
 
             # Optional Gradient Normalization
             if normalize_gradients:

@@ -8,11 +8,12 @@ import torch
 import torch.nn as nn
 
 from .base import Atmosphere, half_atan2_azimuth
+from .step_cache import StepCacheMixin
 from .nf_heads import ThermoHead, n_outputs
 from ..nf import GridField, MultiMLP, to_coordinates
 
 
-class NFAtmosphere(Atmosphere):
+class NFAtmosphere(StepCacheMixin, Atmosphere):
     """
     Neural Field (NF) Atmosphere for single-view observations.
     
@@ -141,16 +142,20 @@ class NFAtmosphere(Atmosphere):
             return tensor
         return tensor.view(*self.grid_shape)
 
-    def _evaluate_nf(self) -> Dict[str, torch.Tensor]:
-        """
-        Evaluate the neural network on the coordinates and apply parameter mapping.
-        """
+    def _net_raw(self) -> torch.Tensor:
+        """Network outputs on the (masked) pixels, (n_pixels, n_outputs)."""
         if self.encoding == "grid":
             out = self.NF()
             if self.is_masked:
                 out = out[self.mask.flatten()]
-        else:
-            out = self.NF(self.coords)
+            return out
+        return self.NF(self.coords)
+
+    def _evaluate_nf(self) -> Dict[str, torch.Tensor]:
+        """
+        Evaluate the neural network on the coordinates and apply parameter mapping.
+        """
+        out = self._cached(self._net_raw)
         
         # 1. Cartesian Magnetic Field Components
         # Scale factors matching typical values and legacy ME_INR_model2

@@ -10,11 +10,12 @@ import torch.nn as nn
 
 from .base import Atmosphere
 from .local_vertical import LocalVerticalMixin
+from .step_cache import StepCacheMixin
 from .nf_heads import ThermoHead, n_outputs
 from ..nf import GridField, MultiMLP, to_coordinates
 
 
-class StereoscopicNFAtmosphere(LocalVerticalMixin, nn.Module):
+class StereoscopicNFAtmosphere(StepCacheMixin, LocalVerticalMixin, nn.Module):
     """
     Unified model for Stereoscopic inversions using Neural Fields.
     
@@ -162,8 +163,8 @@ class StereoscopicNFAtmosphere(LocalVerticalMixin, nn.Module):
         return tensor.view(*self.grid_shape)
 
     def _net(self) -> torch.Tensor:
-        """Network outputs on the pixel grid, (n_pixels, n_outputs)."""
-        return self.NF() if getattr(self, "encoding", "fourier") == "grid" else self.NF(self.coords)
+        """Network outputs on the pixel grid, (n_pixels, n_outputs); one evaluation per open step_cache()."""
+        return self._cached(lambda: self.NF() if getattr(self, "encoding", "fourier") == "grid" else self.NF(self.coords))
 
     def _global_B(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Hook for LocalVerticalMixin: global field in the reference LOS frame."""
