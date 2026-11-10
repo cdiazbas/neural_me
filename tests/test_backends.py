@@ -9,6 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../src"
 
 from neural_me import Observation, MEProblem
 
+@pytest.mark.cpp
 def test_pytorch_vs_cpp_backend():
     # Setup a mock observation
     wavelengths = torch.linspace(-0.5, 0.5, 20)

@@ -250,6 +250,7 @@ def test_c12_spectral_psf_preserves_flat_continuum():
     assert torch.allclose(out, I, atol=1e-6)
 
 
+@pytest.mark.cpp
 def test_c13_cpp_unsupported_line_raises_clearly():
     """C13 (crash, fixed): an unsupported line raises ValueError, not KeyError from pyMilne."""
     from neural_me.physics.milne_eddington import MilneEddington
@@ -260,6 +261,7 @@ def test_c13_cpp_unsupported_line_raises_clearly():
         quiet(me, torch.tensor([[500.0, 1.0, 0.5, 0.0, 10.0, 0.2, 0.03, 0.2, 0.8]]), wl)
 
 
+@pytest.mark.cpp
 @pytest.mark.parametrize("line", [6173, 6302, 6301])
 def test_c13_cpp_and_torch_use_the_same_line_data(line):
     """C13 (fixed): with LINEAS data in both backends they agree to the Voigt-approximation level."""
@@ -641,6 +643,7 @@ def test_c28_levmar_global_jacobians_only_after_accepted_steps():
     assert calls["n"] == 1 + accepted
 
 
+@pytest.mark.cpp
 def test_c29_cpp_warns_when_vlos_is_clipped():
     """C29 (fixed): the cpp backend warns when |vlos| exceeds pyMilne's 13 km/s clip."""
     import warnings as _w

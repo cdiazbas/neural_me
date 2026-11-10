@@ -8,8 +8,34 @@ not a supported configuration.  :mod:`neural_me.core.geometry` is agnostic to
 instrument and pointing; anything specific to one dataset belongs here.
 """
 
+import importlib
+
 import numpy as np
 import pytest
+
+
+def _cpp_backend_built() -> bool:
+    """The cpp backend needs files that setup_cpp.py builds or copies into the package (not tracked by git):
+    the pyMilne extension and MilneEddington.py from the external/pyMilne submodule."""
+    try:
+        importlib.import_module("neural_me.physics.milne_eddington_cpp.MilneEddington")
+        return True
+    except ImportError:
+        return False
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "cpp: needs the compiled cpp backend (python setup_cpp.py build_ext)")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Tests marked ``cpp`` are skipped, not failed, in a checkout where the backend was not built."""
+    if _cpp_backend_built():
+        return
+    skip = pytest.mark.skip(reason="cpp backend not built: git submodule update --init && python setup_cpp.py build_ext --inplace")
+    for item in items:
+        if "cpp" in item.keywords:
+            item.add_marker(skip)
 
 
 # Pointing used to build the shared (warped) grid of the 2022-03-31 run, taken
