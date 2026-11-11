@@ -42,9 +42,13 @@ class CustomBuildExt(build_ext):
             if os.path.exists(ext_path):
                 dest = physics_dir / os.path.basename(ext_path)
                 # Only copy if source and dest are different
-                if not os.path.samefile(ext_path, dest):
+                if not (dest.exists() and os.path.samefile(ext_path, dest)):
+                    # Copy to a temporary name and rename: an in-place overwrite would change the file under any
+                    # running process that has the extension mapped, and crash it.
                     print(f"Copying {ext_path} -> {dest}")
-                    shutil.copy2(ext_path, dest)
+                    tmp = dest.with_name(dest.name + ".tmp")
+                    shutil.copy2(ext_path, tmp)
+                    os.replace(tmp, dest)
                 else:
                     print(f"✓ {dest.name} already in place")
 
@@ -75,7 +79,9 @@ class CustomBuildExt(build_ext):
         try:
             super().build_extension(ext)
         except Exception as e:
-            print(f"Failed to build {ext.name}: {e}")
+            # Fail loudly: swallowing the error left the previous .so in place, silently, so the package kept
+            # running an old build of the backend.
+            raise RuntimeError(f"Failed to build {ext.name}: {e}") from e
 
 
 def find_eigen3():
@@ -168,7 +174,7 @@ def get_pymilne_extension():
         "-mavx2",
         "-mfma",
         "-fno-math-errno",
-        "-fsimd-cost-model=unconditional",
+        "-fsimd-cost-model=unlimited",   # gcc and clang; "unconditional" is not a valid value
         "-mprefer-vector-width=256",
         "-fopenmp-simd",
         "-ftree-vectorize",
