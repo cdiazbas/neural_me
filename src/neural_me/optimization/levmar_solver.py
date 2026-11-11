@@ -129,6 +129,8 @@ class LevMarSolver:
 
         # Detect backend
         self._is_cpp = self.problem.backend == "cpp"
+        if self._is_cpp:
+            self.problem.model.store_rf = True  # the Jacobian is read from the forward's RFs
 
         # Loss history
         self.chi2_history = []  # Chi2 (L2) for internal LM optimization

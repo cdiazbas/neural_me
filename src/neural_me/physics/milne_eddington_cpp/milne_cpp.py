@@ -36,6 +36,81 @@ class _LineasMilneEddington(ME.MilneEddington):
         return cls(j1=d["jl"], j2=d["ju"], g1=d["gl"], g2=d["gu"], cw=d["cw"],
                    gf=10.0 ** PYMILNE_LOG_GF[int(d["cw"])], anomalous=anomalous, dw=dw)
 
+def _model_array(B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1, np_dtype):
+    """(1, n_pixels, 9) model in pyMilne's order [B, gamma, xi, vlos, ddop, eta0, a, S0, S1]; see MILNE_function."""
+    eps = 1e-6
+    model = np.zeros((1, B.shape[0], 9), dtype=np_dtype)
+    model[0, :, 0] = B.detach().cpu().numpy()[:, 0]
+    model[0, :, 1] = np.clip(gamma.detach().cpu().numpy()[:, 0], eps, np.pi - eps)
+    np_xi = xi.detach().cpu().numpy()[:, 0]
+    np_xi[np_xi < 0] += np.pi
+    np_xi[np_xi > np.pi] -= np.pi
+    model[0, :, 2] = np_xi
+    model[0, :, 3] = vlos.detach().cpu().numpy()[:, 0]
+    if np.abs(model[0, :, 3]).max() > VLOS_LIMIT:
+        warnings.warn(
+            f"cpp backend: |vlos| > {VLOS_LIMIT} km/s is clipped by pyMilne; the "
+            "profiles and gradients of those pixels saturate. Use backend='torch' "
+            "for faster flows.",
+            stacklevel=3,
+        )
+    model[0, :, 4] = ddop.detach().cpu().numpy()[:, 0]
+    model[0, :, 5] = eta0.detach().cpu().numpy()[:, 0] / np.sqrt(np.pi)
+    model[0, :, 6] = np.abs(a.detach().cpu().numpy()[:, 0] + eps)
+    model[0, :, 7] = S_0.detach().cpu().numpy()[:, 0]
+    model[0, :, 8] = S_1.detach().cpu().numpy()[:, 0]
+    return model
+
+
+def _grads_in_signature_order(g, dtype):
+    """(n_pixels, 9) gradient in pyMilne's order -> the 9 gradients of forward(B, gamma, xi, vlos, eta0, a, ddop, S0, S1)."""
+    g = g.to(dtype)
+    return (g[:, 0:1], g[:, 1:2], g[:, 2:3], g[:, 3:4], g[:, 5:6] / np.sqrt(np.pi), g[:, 6:7], g[:, 4:5],
+            g[:, 7:8], g[:, 8:9])
+
+
+class MILNE_VJP(torch.autograd.Function):
+    """
+    C++ Milne-Eddington synthesis whose backward is pyMilne's vector-Jacobian
+    product: the forward computes the Stokes only, the backward the 9 parameter
+    gradients per pixel, without the (n_pixels, 9, 4 n_lambda) response
+    functions. Same model array, same parameter order and eta0 scaling as
+    MILNE_function; the Stokes are bit-identical to it.
+
+    Returns I, Q, U, V, each (n_pixels, n_lambda) contiguous (blocks of one
+    (4, n_pixels, n_lambda) buffer), written by pyMilne in the tensors' dtype.
+    """
+
+    @staticmethod
+    def forward(ctx, B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1, milne_instance, mu):
+        np_dtype = np.float32 if milne_instance._get_dtype() == "float32" else np.float64
+        model = _model_array(B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1, np_dtype)
+        if isinstance(mu, torch.Tensor):
+            m = mu.detach().cpu().reshape(-1)
+            if not bool((m == m[0]).all()):          # pyMilne takes one mu (synthesize_RF as well)
+                raise ValueError("cpp backend: mu must be one value for all the pixels")
+            mu = float(m[0])
+        mu = float(mu)
+        n, nw = B.shape[0], milne_instance.n_wavelength
+        buf = torch.empty((4, n, nw), dtype=B.dtype)
+        out = buf.unbind(0)
+        milne_instance.Me.stokes_io(model, [o.data_ptr() for o in out], nw, 1, int(B.dtype == torch.float32), mu=mu)
+        ctx.model, ctx.mu, ctx.milne, ctx.device = model, mu, milne_instance, B.device
+        return tuple(o.to(B.device) for o in out)
+
+    @staticmethod
+    def backward(ctx, gI, gQ, gU, gV):
+        gs = [g.detach().cpu() if g is not None else None for g in (gI, gQ, gU, gV)]
+        dtype = next(g.dtype for g in gs if g is not None)
+        # pyMilne reads the four gradients in place when they share dtype and strides
+        gs = [None if g is None else g.to(dtype).contiguous() for g in gs]
+        nw = ctx.milne.n_wavelength
+        go = ctx.milne.Me.vjp_io(ctx.model, [0 if g is None else g.data_ptr() for g in gs], nw, 1,
+                                 int(dtype == torch.float32), mu=ctx.mu)
+        go = torch.as_tensor(go.reshape(-1, 9), device=ctx.device)
+        return (*_grads_in_signature_order(go, dtype), None, None)
+
+
 class MILNE_function(torch.autograd.Function):
     """
     PyTorch autograd function wrapping the C++ Milne-Eddington synthesis.
@@ -257,6 +332,7 @@ class MILNE(torch.nn.Module):
             # self.idx is for Stokes I, but I have concatenated all the Stokes, so I need to make the
             # new index for all the Stokes: IQUV
             print("idx", idx)
+            self.idx1 = idx
             self.idx = []
             for i in range(4):
                 self.idx.extend(idx + i * new_lambda_axis.size)
@@ -285,10 +361,22 @@ class MILNE(torch.nn.Module):
         self.milne_class = _LineasMilneEddington(
             regions, line, nthreads=nthreads, precision=precision
         )
+        self.milne_class.n_wavelength = int(self.milne_class.get_wavelength_array().size)
         self.mu = mu
         self._last_rf = None  # Store RF from last forward pass for LM solver
+        # True: forward computes and keeps the full response functions (the LM solver reads
+        # them); False: Stokes only, the gradient comes from pyMilne's VJP in backward.
+        self.store_rf = False
 
     def forward(self, B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1):
+        """(n_pixels, 4 n_lambda) if store_rf, else the tuple (I, Q, U, V)."""
+        if not self.store_rf:
+            stokes = MILNE_VJP.apply(B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1, self.milne_class, self.mu)
+            if self.spectralPSF is not None:
+                stokes = tuple(s[:, self.idx1] for s in stokes)
+            self.stokes = stokes
+            return stokes
+
         if self.spectralPSF is None:
             self.stokes = MILNE_function.apply(
                 B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1, self.milne_class, self.mu

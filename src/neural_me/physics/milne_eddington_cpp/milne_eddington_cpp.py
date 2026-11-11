@@ -70,6 +70,9 @@ class MilneEddingtonCPP(nn.Module):
         self.spectralPSF = spectralPSF
         self.nthreads = nthreads
         self.precision = precision
+        # Keep the full response functions of each forward (for the LM solver); off by default:
+        # the gradient then comes from pyMilne's vector-Jacobian product, no RF array.
+        self.store_rf = False
 
         # Initialize C++ model if lambda_axis provided
         if lambda_axis is not None:
@@ -144,8 +147,12 @@ class MilneEddingtonCPP(nn.Module):
         S_0 = params[:, 7][:, None]
         S_1 = params[:, 8][:, None]
 
-        # Call C++ forward (returns concatenated IQUV)
+        self.cpp_model.store_rf = self.store_rf
         stokes = self.cpp_model(B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1)
+        if isinstance(stokes, tuple):  # VJP path: already (I, Q, U, V)
+            return stokes
+
+        # store_rf path: concatenated IQUV
 
         # Split into I, Q, U, V to match PyTorch backend interface
         n_lambda = stokes.shape[1] // 4
@@ -170,6 +177,8 @@ class MilneEddingtonCPP(nn.Module):
         """
         from .milne_cpp import _last_response_functions
 
+        if not self.store_rf:
+            raise RuntimeError("cpp backend: set model.store_rf = True to keep the response functions")
         if _last_response_functions is None:
             return None
         return torch.as_tensor(_last_response_functions)
