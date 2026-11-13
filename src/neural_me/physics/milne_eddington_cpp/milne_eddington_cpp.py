@@ -36,6 +36,7 @@ class MilneEddingtonCPP(nn.Module):
         gUp=None,
         gLow=None,
         precision="float64",
+        spectral_step=None,
         **kwargs,
     ):
         super().__init__()
@@ -68,6 +69,7 @@ class MilneEddingtonCPP(nn.Module):
 
         self.mu = mu
         self.spectralPSF = spectralPSF
+        self.spectral_step = spectral_step
         self.nthreads = nthreads
         self.precision = precision
         # Keep the full response functions of each forward (for the LM solver); off by default:
@@ -101,6 +103,7 @@ class MilneEddingtonCPP(nn.Module):
             spectralPSF=self.spectralPSF,
             nthreads=self.nthreads,
             precision=self.precision,
+            spectral_step=self.spectral_step,
         )
 
     def forward(

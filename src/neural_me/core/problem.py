@@ -48,6 +48,8 @@ class MEProblem:
             precision: 'float32' (default) or 'float64'.
             **kwargs: Extra arguments for backend.
                 - checkpoint_gradients (bool): If True, use gradient checkpointing (backend='torch' only).
+                - spectralPSF ((n, 2) array): instrumental profile, offset (mA) and transmission (backend='cpp').
+                - spectral_step (float): step (mA) of the fine grid the profile is applied on.
         """
         self.obs = observation
         self.loss_type = loss_type.lower()

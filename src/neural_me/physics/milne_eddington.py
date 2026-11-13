@@ -21,7 +21,8 @@ def MilneEddington(line=None, backend="torch", compile=False, nlinea=None, **kwa
         **kwargs: Additional arguments for C++ backend:
             - lambda_axis: wavelength grid (required for C++)
             - mu: viewing angle cosine (default: 1.0)
-            - spectralPSF: spectral PSF for convolution
+            - spectralPSF: (n, 2) array, offset (mA) and transmission of the instrumental profile
+            - spectral_step: step (mA) of the fine grid the profile is applied on (default: the profile's)
             - nthreads: number of threads
             - precision: 'float32' or 'float64' (default: 'float64')
         **kwargs: Additional arguments for Torch backend:

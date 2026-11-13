@@ -260,31 +260,60 @@ class MILNE_function(torch.autograd.Function):
         )
 
 
-def findgrid(w, dw, extra=5):
+def spectral_psf_matrix(lambda_axis, spectralPSF, step=None):
     """
-    Findgrid creates a regular wavelength grid with a step of dw that includes
-    all points in input array w. It adds extra points at the edges for
-    convolution purposes.
+    Fine wavelength grid and the matrix that applies the spectral PSF.
 
-    Returns the new array and the positions of the wavelengths points
-    from w in the new array
+    lambda_axis: observed wavelengths (A, relative to the line centre);
+    spectralPSF: (n, 2) array, offset (mA) and transmission; step: grid step (mA), the profile's sampling by default.
+
+    The grid is regular and extends one profile half-width beyond the observed range on both sides, so that every
+    observed point sees the whole profile. Row i of M (n_observed, n_fine) holds the profile at the exact offset of
+    every fine point from observed point i, normalized to unit sum: the observed points need not lie on the grid.
+    The profile is applied as pyMilne applies it, a correlation, S_obs(l_i) = sum_x P(x) S(l_i + x); it differs
+    from a convolution only for an asymmetric profile.
+
+    Returns the fine grid (A) and M (float64).
     """
-    nw = np.int32(np.rint(w / dw))
-    print("nw", nw)
-    nnw = nw[-1] - nw[0] + 1 + 2 * extra
+    psf = np.asarray(spectralPSF, dtype=np.float64)
+    if psf.ndim != 2 or psf.shape[1] != 2:
+        raise ValueError("spectralPSF must be an (n, 2) array: offset (mA) and transmission")
+    w = np.asarray(lambda_axis, dtype=np.float64)
+    dw = (psf[1, 0] - psf[0, 0] if step is None else step) / 1e3
+    half = np.abs(psf[[0, -1], 0]).max() / 1e3
+    n0 = int(np.ceil(half / dw)) + 1
+    nf = int(np.ceil((w.max() - w.min()) / dw)) + 2 * n0 + 1
+    wf = w.min() - n0 * dw + dw * np.arange(nf)
+    M = np.interp((wf[None, :] - w[:, None]) * 1e3, psf[:, 0], psf[:, 1], left=0.0, right=0.0)
+    return wf, M / M.sum(axis=1, keepdims=True)
 
-    iw = np.arange(nnw, dtype="float64") * dw - extra * dw + w[0]
 
-    idx = np.arange(w.size, dtype="int32")
-    for ii in range(w.size):
-        idx[ii] = np.argmin(np.abs(iw - w[ii]))
+class _ApplySpectralPSF(torch.autograd.Function):
+    """S @ Mt with contiguous operands in both directions. The Stokes from pyMilne and the gradient that comes back
+    through a spatial PSF are strided views, and the matrix product on them is about 20 times slower (torch.profiler,
+    512 x 512 pixels)."""
 
-    return iw, idx
+    @staticmethod
+    def forward(ctx, S, Mt):
+        ctx.save_for_backward(Mt)
+        return S.contiguous() @ Mt
+
+    @staticmethod
+    def backward(ctx, g):
+        (Mt,) = ctx.saved_tensors
+        return g.contiguous() @ Mt.T.contiguous(), None
 
 
 class MILNE(torch.nn.Module):
     """
     Adding the possibility of using a spectral PSF.
+
+    With a spectral PSF, pyMilne synthesizes without it on a fine regular grid (spectral_psf_matrix) and a fixed
+    matrix applies the profile and samples the observed points. The matrix is the same for every pixel, so the
+    gradient keeps pyMilne's fused vector-Jacobian product; pyMilne's own PSF path computes per-pixel response
+    functions instead (4.4 and 7.5 times slower for SO/PHI-HRT and Hinode/SP, 512 x 512 pixels, fwd+bwd,
+    16 threads, float64).
+    spectral_step (mA) sets the fine grid, the profile's sampling by default.
 
     Stores response functions (RF) from last forward call for LM access.
     """
@@ -301,6 +330,7 @@ class MILNE(torch.nn.Module):
         spectralPSF=None,
         nthreads=None,
         precision="float64",
+        spectral_step=None,
     ):
         super(MILNE, self).__init__()
 
@@ -316,41 +346,17 @@ class MILNE(torch.nn.Module):
             lambda_axis = lambda_axis.clone().detach().numpy()
 
         if spectralPSF is None:
-            iw1 = lambda_axis + lambda0
-            regions = [[iw1, None]]
-            lines = [int(lambda0)]
+            regions = [[lambda_axis + lambda0, None]]
+            self.Mt = None
 
         else:
-            # Assume that the spectralPSF is sampled in a efficient way
-            wl_psf = self.spectralPSF[:, 0]
-            tr_psf = self.spectralPSF[:, 1]
-            dw = wl_psf[1] - wl_psf[0]
-            new_lambda_axis, idx = findgrid(lambda_axis, dw / 1e3)
-            print("lambda_axis", lambda_axis)
-            print("new_lambda_axis", new_lambda_axis)
-
-            # self.idx is for Stokes I, but I have concatenated all the Stokes, so I need to make the
-            # new index for all the Stokes: IQUV
-            print("idx", idx)
-            self.idx1 = idx
-            self.idx = []
-            for i in range(4):
-                self.idx.extend(idx + i * new_lambda_axis.size)
-            print("self.idx", self.idx)
-
-            print(
-                "[INFO] Using spectral PSF. Grid size: ",
-                lambda_axis.size,
-                "->",
-                new_lambda_axis.size,
-            )
-
-            # Create the new regions
-            iw1 = new_lambda_axis + lambda0
-            # regions = [[iw1, None]]#tr_psf/tr_psf.sum()]]
-            regions = [[iw1, tr_psf / tr_psf.sum()]]
-            # regions = [[lambda_axis + lambda0, None]]
-            lines = [int(lambda0)]
+            if isinstance(spectralPSF, torch.Tensor):
+                spectralPSF = spectralPSF.detach().cpu().numpy()
+            fine, M = spectral_psf_matrix(lambda_axis, spectralPSF, spectral_step)
+            self.Mt = torch.from_numpy(M.T.copy())          # (n_fine, n_observed)
+            print(f"[INFO] Using spectral PSF: {lambda_axis.size} observed -> {fine.size} fine points every "
+                  f"{(fine[1] - fine[0]) * 1e3:.2f} mA")
+            regions = [[fine + lambda0, None]]
 
         if nthreads is None:
             nthreads = torch.get_num_threads()
@@ -372,23 +378,22 @@ class MILNE(torch.nn.Module):
         """(n_pixels, 4 n_lambda) if store_rf, else the tuple (I, Q, U, V)."""
         if not self.store_rf:
             stokes = MILNE_VJP.apply(B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1, self.milne_class, self.mu)
-            if self.spectralPSF is not None:
-                stokes = tuple(s[:, self.idx1] for s in stokes)
+            if self.Mt is not None:
+                Mt = self.Mt.to(dtype=stokes[0].dtype, device=stokes[0].device)
+                stokes = tuple(_ApplySpectralPSF.apply(s, Mt) for s in stokes)
             self.stokes = stokes
             return stokes
 
-        if self.spectralPSF is None:
-            self.stokes = MILNE_function.apply(
-                B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1, self.milne_class, self.mu
-            )
-
-        else:
-            # Use only the true spectral points for comparison
-            self.stokes = MILNE_function.apply(
-                B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1, self.milne_class, self.mu
-            )[:, self.idx]
-            # print('self.stokes.shape',self.stokes.shape)
-            # [:,self.idx]
+        self.stokes = MILNE_function.apply(B, gamma, xi, vlos, eta0, a, ddop, S_0, S_1, self.milne_class, self.mu)
+        if self.Mt is not None:
+            # (n_pixels, 4 n_fine) -> (n_pixels, 4 n_observed); the response functions the LM solver reads go
+            # through the same matrix
+            global _last_response_functions
+            n, nf, no = self.stokes.shape[0], self.Mt.shape[0], self.Mt.shape[1]
+            Mt = self.Mt.to(dtype=self.stokes.dtype, device=self.stokes.device)
+            self.stokes = (self.stokes.reshape(n, 4, nf) @ Mt).reshape(n, 4 * no)
+            rf = torch.as_tensor(_last_response_functions).reshape(n, 9, 4, nf)
+            _last_response_functions = (rf @ self.Mt.to(rf.dtype)).reshape(n, 9, 4 * no).numpy()
 
         return self.stokes
 
