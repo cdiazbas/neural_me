@@ -27,9 +27,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Solar coordinate / WCS handling for neural_me.core.geometry. Optional:
+# Solar coordinate / WCS handling for neural_me.core.geometry and
+# neural_me.core.coregistration (reproject: the inverse warp). Optional:
 # the rotation math works without it, only the WCS-driven helpers need it.
-geometry = ["sunpy>=5.0"]
+geometry = ["sunpy>=5.0", "reproject"]
 # ISPy supplies the Gary & Hagyard reference implementation the geometry
 # cross-validation tests check against: https://github.com/ISP-SST/ISPy
 dev = [

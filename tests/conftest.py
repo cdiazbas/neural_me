@@ -106,6 +106,8 @@ def hinode_sp_map():
 # The data of the 2022-03-31 run, for the tests that reproduce its products.
 # $NEURAL_ME_DATA, default ../data next to the repository (the NEURALME layout).
 DATA_DIR = os.environ.get("NEURAL_ME_DATA", os.path.join(os.path.dirname(__file__), "..", "..", "data"))
+PHI_L2 = "phi_solo_data/solo_L2_phi-hrt-stokes_20220331T195608_V202305161958_0243310805"
+PHI_CRVAL = (-2448.626 - 16, 642.2178)  # arcsec, the hand-set pointing of the PHI L2 map (header: -2452.626, 719.2178)
 
 
 @pytest.fixture

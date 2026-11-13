@@ -15,6 +15,13 @@ from neural_me.core.geometry import (
     apply_local_vertical,
     instrument_sampling_grid,
 )
+from neural_me.core.coregistration import (
+    pointing_map,
+    instrument_map,
+    model_grid_wcs,
+    save_sampling_grid,
+    reproject_to_model_grid,
+)
 from neural_me.core.atmospheres import (
     Atmosphere,
     SlicedAtmosphere,
@@ -58,5 +65,10 @@ __all__ = [
     "local_vertical_matrix_from_map",
     "apply_local_vertical",
     "instrument_sampling_grid",
+    "pointing_map",
+    "instrument_map",
+    "model_grid_wcs",
+    "save_sampling_grid",
+    "reproject_to_model_grid",
 ]
 

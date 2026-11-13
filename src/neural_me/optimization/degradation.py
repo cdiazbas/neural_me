@@ -456,7 +456,8 @@ class SparseWarpOperator(DegradationOperator):
 
     @classmethod
     def from_file(cls, path, footprint: bool = True, input_shape: Optional[Tuple[int, int]] = None):
-        """From the ``.npz`` of 03_coalignment/phi_reverse_warp.ipynb: ``grid_sub``
+        """From the ``.npz`` of 03_coalignment/phi_reverse_warp.ipynb
+        (:func:`~neural_me.core.coregistration.save_sampling_grid`): ``grid_sub``
         (H, W, K, 2), ``grid`` (H, W, 2) and ``valid`` (H, W). ``footprint=False``
         uses one sample per output pixel."""
         import numpy as np
