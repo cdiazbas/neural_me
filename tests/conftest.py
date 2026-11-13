@@ -9,6 +9,7 @@ instrument and pointing; anything specific to one dataset belongs here.
 """
 
 import importlib
+import os
 
 import numpy as np
 import pytest
@@ -100,3 +101,22 @@ def make_hinode_sp_map(
 def hinode_sp_map():
     """Factory fixture: ``hinode_sp_map(grid_shape, **kwargs)``."""
     return make_hinode_sp_map
+
+
+# The data of the 2022-03-31 run, for the tests that reproduce its products.
+# $NEURAL_ME_DATA, default ../data next to the repository (the NEURALME layout).
+DATA_DIR = os.environ.get("NEURAL_ME_DATA", os.path.join(os.path.dirname(__file__), "..", "..", "data"))
+
+
+@pytest.fixture
+def data_path():
+    """Factory fixture: ``data_path("phi_solo_data/phi_native_warp.npz")`` is the
+    file in DATA_DIR; the test is skipped when it is absent."""
+
+    def path(name):
+        full = os.path.join(DATA_DIR, name)
+        if not os.path.exists(full):
+            pytest.skip(f"needs {name} in {DATA_DIR} (set NEURAL_ME_DATA)")
+        return full
+
+    return path
