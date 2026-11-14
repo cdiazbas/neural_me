@@ -145,12 +145,16 @@ def test_solve_velocity_l1_and_l2(synthetic):
     l2 = solve_velocity(v1, v2, d["e1"], d["e2"], d["R"], b=d["b"], lam_align=1.0, loss="l2")
     l1 = solve_velocity(v1, v2, d["e1"], d["e2"], d["R"], b=d["b"], lam_align=1.0, loss="l1")
     E = -np.stack([d["e1"], d["e2"]])
-    def J(v, p):
+    def J(v, p):                     # per-pixel loss of fit_velocity_field: mean over the two views + lam |v_perp|^2
         r = v @ E.T - np.stack([v1, v2], -1)
         perp = v - (v * d["b"]).sum(-1, keepdims=True) * d["b"]
-        return (np.abs(r) ** p).sum(-1) + 1.0 * (perp ** 2).sum(-1)
+        return 0.5 * (np.abs(r) ** p).sum(-1) + 1.0 * (perp ** 2).sum(-1)
     assert np.abs(l1 - l2).max() > 1e-3
     assert np.all(J(l1, 1) <= J(l2, 1) + 1e-6) and np.all(J(l2, 2) <= J(l1, 2) + 1e-6)
+    # each is the minimum of that loss, not only better than the other: no small step lowers it
+    for v, p in ((l1, 1), (l2, 2)):
+        for step in g.normal(0, 0.05, (20,) + v.shape):
+            assert np.all(J(v, p) <= J(v + step, p) + 1e-6)
     # without the penalty both fit the data exactly and coincide
     assert np.allclose(solve_velocity(v1, v2, d["e1"], d["e2"], d["R"], loss="l1"), solve_velocity(v1, v2, d["e1"], d["e2"], d["R"]))
 

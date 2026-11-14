@@ -103,10 +103,11 @@ def solve_velocity(v1: np.ndarray, v2: np.ndarray, e1: np.ndarray, e2: np.ndarra
                    b: Optional[np.ndarray] = None, lam_align: float = 0.0, loss: str = "l2",
                    n_irls: int = 50, eps: float = 1e-4) -> np.ndarray:
     """Velocity in the local frame ``(v_r, v_tN, v_tW)``, pixel by pixel: the minimum of
-    ``D(E v - y) + lam_align |(I - b b^T) v|^2`` with ``E`` the rows ``-e_1, -e_2``, ``y = (v1, v2)``, and
+    ``D(E v - y) / 2 + lam_align |(I - b b^T) v|^2`` with ``E`` the rows ``-e_1, -e_2``, ``y = (v1, v2)``, and
     ``D`` the sum of squares (``loss="l2"``, closed form) or of absolute values of the two residuals
     (``loss="l1"``, iteratively reweighted least squares from the l2 solution, ``n_irls`` iterations,
-    residuals floored at ``eps``).
+    residuals floored at ``eps``). This is the loss of :func:`fit_velocity_field` in each pixel (the data term
+    is the mean over the two views), so ``lam_align`` has the same meaning in both.
 
     ``lam_align = 0``: the minimum-norm solution (pseudo-inverse), with the component along
     :func:`unseen_direction` equal to 0. ``lam_align > 0`` (needs ``b``, frame of view 1): that component
@@ -122,15 +123,16 @@ def solve_velocity(v1: np.ndarray, v2: np.ndarray, e1: np.ndarray, e2: np.ndarra
     if loss not in ("l2", "l1"):
         raise ValueError(f"loss must be 'l2' or 'l1', got {loss!r}")
     bl = to_local(b, R)
-    P = lam_align * (np.eye(3) - bl[..., :, None] * bl[..., None, :])
+    P = 2.0 * lam_align * (np.eye(3) - bl[..., :, None] * bl[..., None, :])
 
-    def weighted(w):                                        # minimum of sum_k w_k r_k^2 + lam |P v|^2
+    def weighted(w):                                        # minimum of sum_k w_k r_k^2 / 2 + lam |(I - b b^T) v|^2
         A = np.einsum("...ki,...k,...kj->...ij", E, w, E) + P
         return np.linalg.solve(A, np.einsum("...ki,...k,...k->...i", E, w, y)[..., None])[..., 0]
 
     v = weighted(np.ones_like(y))
     if loss == "l1":
-        # sum |r| + lam |P v|^2 is stationary where sum sign(r) E + 2 lam P v = 0, i.e. weights 1 / (2 |r|)
+        # sum |r| / 2 + lam |(I - b b^T) v|^2 is stationary where sum sign(r) E / 2 + 2 lam (I - b b^T) v = 0, which is the
+        # stationarity of the weighted problem with weights 1 / (2 |r|)
         for _ in range(n_irls):
             r = np.einsum("...ij,...j->...i", E, v) - y
             v = weighted(0.5 / np.maximum(np.abs(r), eps))
