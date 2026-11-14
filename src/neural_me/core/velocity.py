@@ -139,7 +139,7 @@ def solve_velocity(v1: np.ndarray, v2: np.ndarray, e1: np.ndarray, e2: np.ndarra
 
 def fit_velocity_field(v1: np.ndarray, v2: np.ndarray, e1: np.ndarray, e2: np.ndarray, R: np.ndarray,
                        mask: np.ndarray, b: Optional[np.ndarray] = None, mode: str = "free",
-                       lam_align: float = 0.0, loss: str = "l1", n_iter: int = 1500, lr: float = 1e-2, scale: float = 2.0,
+                       lam_align: float = 0.0, loss: str = "l1", smooth: float = 0.0, n_iter: int = 1500, lr: float = 1e-2, scale: float = 2.0,
                        seed: int = 0, grid_kwargs: Optional[dict] = None, verbose: bool = False) -> dict:
     """Neural field for the velocity in the local frame, fitted to two LOS velocities.
 
@@ -155,6 +155,10 @@ def fit_velocity_field(v1: np.ndarray, v2: np.ndarray, e1: np.ndarray, e2: np.nd
     data term alone leaves the third at zero (minimum-norm solution).
     ``mode="aligned"``: the field outputs the speed ``s`` and ``v = s b`` (the smooth counterpart of
     :func:`field_aligned_velocity`).
+    ``smooth``: weight of a smoothness penalty, the mean over ``mask`` of the squared difference between each
+    component of the velocity and the weighted mean of its eight neighbours (sides 1, corners 0.5; the kernel of
+    the spatial regularization of the inversion). The grids of the network reach the pixel scale, so without it
+    the field reproduces the fine structure of the data, defects included.
 
     Outputs are multiplied by ``scale`` (km/s if the velocities are), and the network is a
     :class:`~neural_me.core.nf.GridField` (``grid_kwargs`` passed on). Returns a dict: ``v_local``
@@ -196,6 +200,14 @@ def fit_velocity_field(v1: np.ndarray, v2: np.ndarray, e1: np.ndarray, e2: np.nd
             return o[:, :1] * BL
         return torch.einsum("pk,pkj->pj", o, Q[:, :o.shape[1]])
 
+    K = torch.tensor([[0.5, 1.0, 0.5], [1.0, 0.0, 1.0], [0.5, 1.0, 0.5]]) / 6.0
+    K = K.view(1, 1, 3, 3).repeat(3, 1, 1, 1)
+
+    def roughness(v):                                       # mean over the mask of sum_c (v_c - K * v_c)^2
+        img = v.T.reshape(1, 3, ny, nx)
+        nb = torch.nn.functional.conv2d(torch.nn.functional.pad(img, (1, 1, 1, 1), mode="replicate"), K, groups=3)
+        return ((img - nb) ** 2).sum(1).reshape(-1)[M].mean()
+
     history = []
     for it in range(n_iter):
         opt.zero_grad()
@@ -207,6 +219,8 @@ def fit_velocity_field(v1: np.ndarray, v2: np.ndarray, e1: np.ndarray, e2: np.nd
         if lam_align > 0 and mode == "free":
             vp = v - (v * BL).sum(-1, keepdim=True) * BL
             loss_ = loss_ + lam_align * (vp[M] ** 2).sum(-1).mean()
+        if smooth > 0:
+            loss_ = loss_ + smooth * roughness(v)
         loss_.backward()
         opt.step()
         history.append(float(loss_))

@@ -153,3 +153,17 @@ def test_solve_velocity_l1_and_l2(synthetic):
     assert np.all(J(l1, 1) <= J(l2, 1) + 1e-6) and np.all(J(l2, 2) <= J(l1, 2) + 1e-6)
     # without the penalty both fit the data exactly and coincide
     assert np.allclose(solve_velocity(v1, v2, d["e1"], d["e2"], d["R"], loss="l1"), solve_velocity(v1, v2, d["e1"], d["e2"], d["R"]))
+
+
+def test_fit_velocity_field_smoothness(synthetic):
+    """With noisy velocities the smoothness penalty gives a smoother field, closer to the true one."""
+    d = synthetic
+    g = np.random.default_rng(7)
+    v1 = d["v1"] + g.normal(0, 0.5, d["v1"].shape); v2 = d["v2"] + g.normal(0, 0.5, d["v2"].shape)
+    kw = dict(b=d["b"], mode="free", lam_align=0.1, n_iter=400)
+    rough = lambda v: np.mean(np.sum((v[1:, :] - v[:-1, :]) ** 2, -1)) + np.mean(np.sum((v[:, 1:] - v[:, :-1]) ** 2, -1))
+    v0 = fit_velocity_field(v1, v2, d["e1"], d["e2"], d["R"], d["mask"], **kw)["v_local"]
+    vs = fit_velocity_field(v1, v2, d["e1"], d["e2"], d["R"], d["mask"], smooth=10.0, **kw)["v_local"]
+    err = lambda v: np.sqrt(np.mean(np.sum((v - d["v"]) ** 2, -1)))
+    assert rough(vs) < 0.5 * rough(v0)
+    assert err(vs) < err(v0)
