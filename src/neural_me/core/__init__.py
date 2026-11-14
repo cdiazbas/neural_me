@@ -15,6 +15,13 @@ from neural_me.core.geometry import (
     apply_local_vertical,
     instrument_sampling_grid,
 )
+from neural_me.core.velocity import (
+    view_los_vectors,
+    unseen_direction,
+    zero_at_umbral_core,
+    field_aligned_velocity,
+    fit_velocity_field,
+)
 from neural_me.core.coregistration import (
     pointing_map,
     instrument_map,
@@ -70,5 +77,10 @@ __all__ = [
     "model_grid_wcs",
     "save_sampling_grid",
     "reproject_to_model_grid",
+    "view_los_vectors",
+    "unseen_direction",
+    "zero_at_umbral_core",
+    "field_aligned_velocity",
+    "fit_velocity_field",
 ]
 
