@@ -20,6 +20,7 @@ from neural_me.core.velocity import (
     unseen_direction,
     zero_at_umbral_core,
     field_aligned_velocity,
+    solve_velocity,
     fit_velocity_field,
 )
 from neural_me.core.coregistration import (
@@ -81,6 +82,7 @@ __all__ = [
     "unseen_direction",
     "zero_at_umbral_core",
     "field_aligned_velocity",
+    "solve_velocity",
     "fit_velocity_field",
 ]
 

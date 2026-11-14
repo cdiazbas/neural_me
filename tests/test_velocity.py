@@ -11,8 +11,8 @@ import pytest
 import torch
 
 from neural_me.core.atmospheres.stereoscopic import StereoscopicAtmosphere
-from neural_me.core.velocity import (field_aligned_velocity, fit_velocity_field, to_local, unseen_direction,
-                                     view_los_vectors, zero_at_umbral_core)
+from neural_me.core.velocity import (field_aligned_velocity, fit_velocity_field, solve_velocity, to_local,
+                                     unseen_direction, view_los_vectors, zero_at_umbral_core)
 
 GAMMA, BETA = 101.2, 0.8
 
@@ -122,3 +122,34 @@ def test_to_local_and_argument_checks(synthetic):
         fit_velocity_field(d["v1"], d["v2"], d["e1"], d["e2"], d["R"], d["mask"], mode="aligned", n_iter=1)
     with pytest.raises(ValueError):
         field_aligned_velocity(d["v1"], d["v2"], d["b"], d["e1"], d["e2"], zero="umbra")
+
+
+def test_solve_velocity_closed_form(synthetic):
+    d = synthetic
+    n = unseen_direction(d["e1"], d["e2"])
+    v0 = solve_velocity(d["v1"], d["v2"], d["e1"], d["e2"], d["R"])
+    assert np.allclose(-(v0 @ d["e1"]), d["v1"], atol=1e-10) and np.allclose(-(v0 @ d["e2"]), d["v2"], atol=1e-10)
+    assert np.abs(v0 @ n).max() < 1e-10                                    # minimum norm: nothing along the unseen axis
+    # with a strong alignment penalty the solution tends to the true field-aligned velocity
+    v1_ = solve_velocity(d["v1"], d["v2"], d["e1"], d["e2"], d["R"], b=d["b"], lam_align=1e4)
+    assert np.sqrt(np.mean(np.sum((v1_ - d["v"]) ** 2, -1))) < 1e-3
+    with pytest.raises(ValueError):
+        solve_velocity(d["v1"], d["v2"], d["e1"], d["e2"], d["R"], lam_align=1.0)
+
+
+def test_solve_velocity_l1_and_l2(synthetic):
+    """With the alignment penalty the two losses differ; the l1 solution is the minimum of its own objective."""
+    d = synthetic
+    g = np.random.default_rng(5)
+    v1 = d["v1"] + g.normal(0, 0.3, d["v1"].shape); v2 = d["v2"] + g.normal(0, 0.3, d["v2"].shape)
+    l2 = solve_velocity(v1, v2, d["e1"], d["e2"], d["R"], b=d["b"], lam_align=1.0, loss="l2")
+    l1 = solve_velocity(v1, v2, d["e1"], d["e2"], d["R"], b=d["b"], lam_align=1.0, loss="l1")
+    E = -np.stack([d["e1"], d["e2"]])
+    def J(v, p):
+        r = v @ E.T - np.stack([v1, v2], -1)
+        perp = v - (v * d["b"]).sum(-1, keepdims=True) * d["b"]
+        return (np.abs(r) ** p).sum(-1) + 1.0 * (perp ** 2).sum(-1)
+    assert np.abs(l1 - l2).max() > 1e-3
+    assert np.all(J(l1, 1) <= J(l2, 1) + 1e-6) and np.all(J(l2, 2) <= J(l1, 2) + 1e-6)
+    # without the penalty both fit the data exactly and coincide
+    assert np.allclose(solve_velocity(v1, v2, d["e1"], d["e2"], d["R"], loss="l1"), solve_velocity(v1, v2, d["e1"], d["e2"], d["R"]))

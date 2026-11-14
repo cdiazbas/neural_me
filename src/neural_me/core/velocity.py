@@ -10,6 +10,8 @@ so the component of ``v`` along ``e_1 x e_2`` is not measured. Two ways to fill 
   speed ``s`` follows pixel by pixel from both velocities (least squares). The
   residual perpendicular to ``(c_1, c_2) = (b . e_1, b . e_2)`` tests the hypothesis;
   the zero points are fitted globally or given.
+* :func:`solve_velocity`: the same pixel by pixel in closed form (minimum norm, or with a
+  penalty on the part of ``v`` perpendicular to the field), with no spatial coupling.
 * :func:`fit_velocity_field`: a neural field (:class:`~neural_me.core.nf.GridField`)
   for the velocity in the local frame ``(v_r, v_tN, v_tW)`` fitted to both
   velocities, either free with an optional soft penalty on the part of ``v``
@@ -28,7 +30,7 @@ import numpy as np
 import torch
 
 __all__ = ["view_los_vectors", "unseen_direction", "zero_at_umbral_core", "field_aligned_velocity",
-           "to_local", "fit_velocity_field"]
+           "to_local", "solve_velocity", "fit_velocity_field"]
 
 
 def view_los_vectors(gamma: float, beta: float) -> Tuple[np.ndarray, np.ndarray]:
@@ -97,9 +99,47 @@ def to_local(v: np.ndarray, R: np.ndarray) -> np.ndarray:
     return np.einsum("...ij,...j->...i", R, v)
 
 
+def solve_velocity(v1: np.ndarray, v2: np.ndarray, e1: np.ndarray, e2: np.ndarray, R: np.ndarray,
+                   b: Optional[np.ndarray] = None, lam_align: float = 0.0, loss: str = "l2",
+                   n_irls: int = 50, eps: float = 1e-4) -> np.ndarray:
+    """Velocity in the local frame ``(v_r, v_tN, v_tW)``, pixel by pixel: the minimum of
+    ``D(E v - y) + lam_align |(I - b b^T) v|^2`` with ``E`` the rows ``-e_1, -e_2``, ``y = (v1, v2)``, and
+    ``D`` the sum of squares (``loss="l2"``, closed form) or of absolute values of the two residuals
+    (``loss="l1"``, iteratively reweighted least squares from the l2 solution, ``n_irls`` iterations,
+    residuals floored at ``eps``).
+
+    ``lam_align = 0``: the minimum-norm solution (pseudo-inverse), with the component along
+    :func:`unseen_direction` equal to 0. ``lam_align > 0`` (needs ``b``, frame of view 1): that component
+    is filled towards the field; the larger ``lam_align``, the closer to the field-aligned solution and the
+    larger the residual of the two velocities. No spatial coupling: for a smooth solution use
+    :func:`fit_velocity_field`. Takes well under a second for 512 x 512 pixels."""
+    E = -np.stack([np.einsum("...ij,j->...i", R, e1), np.einsum("...ij,j->...i", R, e2)], axis=-2)   # (..., 2, 3)
+    y = np.stack([v1, v2], axis=-1)
+    if lam_align == 0:
+        return np.einsum("...ij,...j->...i", np.linalg.pinv(E), y)
+    if b is None:
+        raise ValueError("b is needed for lam_align > 0")
+    if loss not in ("l2", "l1"):
+        raise ValueError(f"loss must be 'l2' or 'l1', got {loss!r}")
+    bl = to_local(b, R)
+    P = lam_align * (np.eye(3) - bl[..., :, None] * bl[..., None, :])
+
+    def weighted(w):                                        # minimum of sum_k w_k r_k^2 + lam |P v|^2
+        A = np.einsum("...ki,...k,...kj->...ij", E, w, E) + P
+        return np.linalg.solve(A, np.einsum("...ki,...k,...k->...i", E, w, y)[..., None])[..., 0]
+
+    v = weighted(np.ones_like(y))
+    if loss == "l1":
+        # sum |r| + lam |P v|^2 is stationary where sum sign(r) E + 2 lam P v = 0, i.e. weights 1 / (2 |r|)
+        for _ in range(n_irls):
+            r = np.einsum("...ij,...j->...i", E, v) - y
+            v = weighted(0.5 / np.maximum(np.abs(r), eps))
+    return v
+
+
 def fit_velocity_field(v1: np.ndarray, v2: np.ndarray, e1: np.ndarray, e2: np.ndarray, R: np.ndarray,
                        mask: np.ndarray, b: Optional[np.ndarray] = None, mode: str = "free",
-                       lam_align: float = 0.0, n_iter: int = 1500, lr: float = 1e-2, scale: float = 2.0,
+                       lam_align: float = 0.0, loss: str = "l1", n_iter: int = 1500, lr: float = 1e-2, scale: float = 2.0,
                        seed: int = 0, grid_kwargs: Optional[dict] = None, verbose: bool = False) -> dict:
     """Neural field for the velocity in the local frame, fitted to two LOS velocities.
 
@@ -108,8 +148,8 @@ def fit_velocity_field(v1: np.ndarray, v2: np.ndarray, e1: np.ndarray, e2: np.nd
     frame; mask: pixels in the loss; b: unit field vector (ny, nx, 3) in the frame of view 1, needed
     for ``mode="aligned"`` and for ``lam_align > 0``.
 
-    ``mode="free"``: the field outputs ``(v_r, v_tN, v_tW)``; the loss is the mean absolute residual of
-    both views plus ``lam_align`` times the mean squared part of ``v`` perpendicular to ``b``. The
+    ``mode="free"``: the field outputs ``(v_r, v_tN, v_tW)``; the loss is the mean absolute (``loss="l1"``)
+    or squared (``loss="l2"``) residual of both views plus ``lam_align`` times the mean squared part of ``v`` perpendicular to ``b``. The
     component along :func:`unseen_direction` is set only by that penalty: the network gives the coordinates on a basis
     with two axes in the plane of the lines of sight and one along the unseen direction, all starting at zero, so the
     data term alone leaves the third at zero (minimum-norm solution).
@@ -121,6 +161,8 @@ def fit_velocity_field(v1: np.ndarray, v2: np.ndarray, e1: np.ndarray, e2: np.nd
     (ny, nx, 3), ``data_residual`` (final mean absolute residual) and ``history`` (loss per iteration)."""
     from .nf import GridField
 
+    if loss not in ("l1", "l2"):
+        raise ValueError(f"loss must be 'l1' or 'l2', got {loss!r}")
     if mode not in ("free", "aligned"):
         raise ValueError(f"mode must be 'free' or 'aligned', got {mode!r}")
     if (mode == "aligned" or lam_align > 0) and b is None:
@@ -161,15 +203,15 @@ def fit_velocity_field(v1: np.ndarray, v2: np.ndarray, e1: np.ndarray, e2: np.nd
         r1 = -(v * P1).sum(-1) - V1
         r2 = -(v * P2).sum(-1) - V2
         data = 0.5 * (r1[M].abs().mean() + r2[M].abs().mean())
-        loss = data
+        loss_ = data if loss == "l1" else 0.5 * ((r1[M] ** 2).mean() + (r2[M] ** 2).mean())
         if lam_align > 0 and mode == "free":
             vp = v - (v * BL).sum(-1, keepdim=True) * BL
-            loss = loss + lam_align * (vp[M] ** 2).sum(-1).mean()
-        loss.backward()
+            loss_ = loss_ + lam_align * (vp[M] ** 2).sum(-1).mean()
+        loss_.backward()
         opt.step()
-        history.append(float(loss))
+        history.append(float(loss_))
         if verbose and (it % 250 == 0 or it == n_iter - 1):
-            print(f"fit_velocity_field it {it:5d} | loss {float(loss):.4f} | data {float(data):.4f}")
+            print(f"fit_velocity_field it {it:5d} | loss {float(loss_):.4f} | mean |r| {float(data):.4f}")
     with torch.no_grad():
         v = velocity()
         r1 = -(v * P1).sum(-1) - V1
