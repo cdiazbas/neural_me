@@ -34,6 +34,45 @@ from tqdm import trange
 from neural_me.core.problem import MEProblem
 from neural_me.core.atmospheres.base import Atmosphere
 
+# field="lqlu": the transverse field as (Lq, Lu) = B_perp^2 (cos 2 xi, sin 2 xi), in units of L_SCALE G^2, and
+# |L| >= L_FLOOR G^2 (B_perp >= 1 G) so that the derivatives of B_perp and xi stay finite.
+L_SCALE = 1e5
+L_FLOOR = 1.0
+
+
+def _sph_to_lqlu(p: torch.Tensor) -> torch.Tensor:
+    """(n, 9) [B, gamma, xi, ...] -> (n, 9) [Blos, Lq / L_SCALE, Lu / L_SCALE, ...]."""
+    B, gamma, xi = p[:, 0], p[:, 1], p[:, 2]
+    L = (B * torch.sin(gamma)) ** 2
+    field = torch.stack([B * torch.cos(gamma), L * torch.cos(2 * xi) / L_SCALE, L * torch.sin(2 * xi) / L_SCALE], 1)
+    return torch.cat([field, p[:, 3:]], 1)
+
+
+def _floor_lqlu(q: torch.Tensor) -> torch.Tensor:
+    """Move (Lq, Lu) with |L| < L_FLOOR radially onto |L| = L_FLOOR (the origin onto (L_FLOOR, 0))."""
+    Lq, Lu = q[:, 1] * L_SCALE, q[:, 2] * L_SCALE
+    L = torch.hypot(Lq, Lu)
+    small = L < L_FLOOR
+    c = torch.where(L > 0, Lq / L.clamp_min(torch.finfo(L.dtype).tiny), torch.ones_like(L))
+    s = torch.where(L > 0, Lu / L.clamp_min(torch.finfo(L.dtype).tiny), torch.zeros_like(L))
+    q = q.clone()
+    q[:, 1] = torch.where(small, L_FLOOR * c, Lq) / L_SCALE
+    q[:, 2] = torch.where(small, L_FLOOR * s, Lu) / L_SCALE
+    return q
+
+
+def _lqlu_field_to_sph(f: torch.Tensor) -> torch.Tensor:
+    """(3,) [Blos, Lq / L_SCALE, Lu / L_SCALE] -> (3,) [B, gamma, xi], for |L| >= L_FLOOR."""
+    Lq, Lu = f[1] * L_SCALE, f[2] * L_SCALE
+    Bt = torch.sqrt(torch.hypot(Lq, Lu))
+    return torch.stack([torch.hypot(f[0], Bt), torch.atan2(Bt, f[0]), torch.remainder(0.5 * torch.atan2(Lu, Lq), np.pi)])
+
+
+def _lqlu_to_sph(q: torch.Tensor) -> torch.Tensor:
+    """(n, 9) LM coordinates of field="lqlu" -> (n, 9) spherical, after the floor."""
+    q = _floor_lqlu(q)
+    return torch.cat([torch.vmap(_lqlu_field_to_sph)(q[:, :3]), q[:, 3:]], 1)
+
 
 class LevMarSolver:
     """
@@ -52,6 +91,12 @@ class LevMarSolver:
     Args:
         problem: MEProblem instance (holds observation + forward model).
         atmosphere: Atmosphere to optimize (any Atmosphere subclass).
+        field: coordinates of the magnetic field in which the LM steps.
+            ``"spherical"`` (default): [B, gamma, xi]. ``"lqlu"``: [Blos, Lq, Lu] with
+            (Lq, Lu) = B_perp^2 (cos 2 xi, sin 2 xi). Q and U are linear in B_perp^2, so in
+            (Lq, Lu) their derivatives do not vanish at B_perp = 0, where the spherical (and
+            the (BQ, BU)) steps stall; |L| is floored at 1 G^2. The atmosphere, the forward
+            model and the bounds are the same in both; only the step changes.
 
     Usage::
 
@@ -67,7 +112,11 @@ class LevMarSolver:
         problem: MEProblem,
         atmosphere: Optional[Atmosphere] = None,
         device: Optional[torch.device] = None,
+        field: str = "spherical",
     ):
+        if field not in ("spherical", "lqlu"):
+            raise ValueError(f"field must be 'spherical' or 'lqlu', got {field!r}")
+        self.field = field
         self.problem = problem
         self.device = device if device is not None else problem.device
 
@@ -166,6 +215,19 @@ class LevMarSolver:
     # ------------------------------------------------------------------ #
 
     def _forward_and_jacobian(self, params: torch.Tensor):
+        """Synthetic spectra and Jacobian in the LM coordinates of ``self.field`` (see
+        :meth:`_forward_and_jacobian_sph`). For ``"lqlu"`` the spherical Jacobian is carried to
+        [Blos, Lq, Lu] by the chain rule at the floored point."""
+        if self.field == "spherical":
+            return self._forward_and_jacobian_sph(params)
+        q = _floor_lqlu(params)
+        syn, J = self._forward_and_jacobian_sph(_lqlu_to_sph(q))
+        M = torch.vmap(torch.func.jacrev(_lqlu_field_to_sph))(q[:, :3].to(J.dtype))   # (n, 3 sph, 3 lqlu)
+        J = J.clone()
+        J[:, :3, :] = torch.einsum("nki,nkd->nid", M, J[:, :3, :])
+        return syn, J
+
+    def _forward_and_jacobian_sph(self, params: torch.Tensor):
         """
         Compute synthetic spectra and Jacobian for all pixels.
 
@@ -250,6 +312,10 @@ class LevMarSolver:
             return syn, J
 
     def _forward_only(self, params: torch.Tensor) -> torch.Tensor:
+        """Forward pass only, from parameters in the LM coordinates of ``self.field``."""
+        return self._forward_only_sph(params if self.field == "spherical" else _lqlu_to_sph(params))
+
+    def _forward_only_sph(self, params: torch.Tensor) -> torch.Tensor:
         """
         Forward pass only (no Jacobian). Used for trial step evaluation.
 
@@ -348,12 +414,18 @@ class LevMarSolver:
 
     def _params_from_atmosphere(self) -> torch.Tensor:
         """
-        Get (n_pixels, 9) physical params from atmosphere.
+        Get (n_pixels, 9) physical params from atmosphere, in the LM coordinates of ``self.field``.
         """
         with torch.no_grad():
-            return self.atmosphere.to_stack().reshape(-1, 9).clone()
+            p = self.atmosphere.to_stack().reshape(-1, 9).clone()
+            return p if self.field == "spherical" else _floor_lqlu(_sph_to_lqlu(p))
 
     def _params_to_atmosphere(self, params: torch.Tensor):
+        """Set the atmosphere from (n_pixels, 9) params in the LM coordinates of ``self.field``."""
+        with torch.no_grad():
+            self._params_to_atmosphere_sph(params if self.field == "spherical" else _lqlu_to_sph(params))
+
+    def _params_to_atmosphere_sph(self, params: torch.Tensor):
         """
         Set atmosphere from ``(n_pixels, 9)`` physical params
         ``[B, gamma, xi, vlos, eta0, a, ddop, S0, S1]``.
