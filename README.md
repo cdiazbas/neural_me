@@ -4,33 +4,43 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
-[![License: BSD-3](https://img.shields.io/badge/License-BSD--3-green.svg)](LICENSE.rst)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ## Overview
 
-Neural ME is a modern, GPU-accelerated framework for Milne-Eddington (ME) spectropolarimetric inversions. It provides:
+Neural ME is a framework for Milne-Eddington (ME) spectropolarimetric inversions, on CPU and GPU. It provides:
 
-- **Differentiable forward model**: Full PyTorch and C++ implementations with automatic differentiation
-- **Flexible atmosphere parameterization**: Cartesian, spherical-softplus, and neural field (NF) models
-- **Multi-instrument stereoscopic inversions**: Shared B-field with frame rotation between viewpoints
-- **Instrumental degradation operators**: Spatial PSF, spectral PSF, stray light, coordinate warping
-- **Multiple solvers**: Pixel-wise Adam, Levenberg-Marquardt, and stereoscopic solver
-- **Modular design**: Clean separation of physics, atmospheres, optimization, and degradation
+- **Differentiable forward model**: a PyTorch ME synthesis and a C++ one (pyMilne) whose gradient is computed as a
+  vector-Jacobian product
+- **Atmosphere parameterizations**: per pixel (Cartesian, spherical, spherical-softplus) and neural fields (Fourier
+  features or a dense multiresolution grid)
+- **Stereoscopic inversions**: one magnetic field shared by two vantage points, thermodynamic parameters per view
+- **Instrumental degradation in the forward model**: spatial PSF, spectral PSF, stray light, reprojection onto the pixels
+  of another instrument
+- **Solvers**: pixel-wise Adam, Levenberg-Marquardt, and the stereoscopic solver
+- **Penalties**: spatial smoothness and the null space of the reprojection
 
 ## Installation
 
+The C++ backend lives in the `external/pyMilne` submodule, so clone with it:
+
 ```bash
-git clone https://github.com/cdiazbas/neural_me.git
-cd neural_me
+git clone --recursive https://github.com/cdiazbas/neural_me.git
+cd neural_me                          # or, in an existing clone: git submodule update --init
 pip install -e .
 ```
 
-The C++ ME backend requires compilation (faster, CPU-only):
+The C++ backend (CPU only, the fast one) needs FFTW3, Eigen3, a C++20 compiler and a CPU with AVX2, e.g. in a conda
+environment:
+
 ```bash
+conda install -c conda-forge fftw eigen
 python setup_cpp.py build_ext --inplace
 ```
 
-## Quick Start
+Without it, `backend='torch'` uses the PyTorch synthesis.
+
+## Quick start
 
 ### Single-instrument pixel inversion
 
@@ -51,69 +61,105 @@ solver.solve(n_iterations=500)
 atm = solver.get_atmosphere()
 ```
 
-### Stereoscopic inversion (two instruments)
+### Stereoscopic inversion: the setup of the paper
+
+The core of the reference inversion of Díaz Baso et al. (in prep.), *Hinode*/SP (Fe I 6302 Å) and SO/PHI-HRT
+(Fe I 6173 Å): one `MEProblem` per instrument with its spectral PSF, a shared neural field with the grid encoding, the
+PSF of *Hinode*/SP, and the reprojection, PSF core and stray light of SO/PHI-HRT. The arrays `d_hinode`, `d_phi`,
+`psf_hinode` and `warp_valid` come from the co-registered data.
 
 ```python
-from neural_me import (
-    Observation, MEProblem, StereoscopicAtmosphere
-)
-from neural_me.optimization import StereoSolver, ExtendedPSFOperator
+import numpy as np
+import torch
+from neural_me import Observation, MEProblem, StereoscopicNFAtmosphere
+from neural_me.optimization import (StereoSolver, SparseWarpOperator, SpatialPSFOperator,
+                                    ExtendedPSFOperator, ComposeOperator)
+from neural_me.regularization.spatial import smoothness_loss
+from neural_me.instruments import get_resource_path
 
-obs1 = Observation(data=hinode_data, wavelengths=wl_hinode)
-obs2 = Observation(data=solo_data,   wavelengths=wl_solo)
+# Hinode/SP on the model grid, SO/PHI-HRT in its native pixels (zero outside its valid pixels)
+obs1 = Observation(data=d_hinode, wavelengths=wl_hinode)
+obs2 = Observation(data=d_phi, wavelengths=wl_phi)
 
-prob1 = MEProblem(observation=obs1, line=6301, backend='cpp')
-prob2 = MEProblem(observation=obs2, line=6173, backend='cpp')
+# Spectral PSF (offset in mA, transmission), applied on a fine grid of spectral_step mA
+profile = lambda name: np.loadtxt(get_resource_path(name))
+problem1 = MEProblem(observation=obs1, line=6302, weights=[1, 10, 10, 10], loss_type="l1", backend="cpp",
+                     spectralPSF=profile("HINODE_SP_ins_prof.psf"), spectral_step=10)
+problem2 = MEProblem(observation=obs2, line=6173, weights=[1, 10, 10, 10], loss_type="l1", backend="cpp",
+                     spectralPSF=profile("gaussian_phihrt.psf"), spectral_step=15)
 
-atm = StereoscopicAtmosphere(grid_shape=(ny, nx), gamma=101.0, delta=90.0)
+# One field shared by both views, thermodynamics per view, on a multiresolution grid
+# (encoding="grid"; the default "fourier" is the slower network of Paper I)
+atmosphere = StereoscopicNFAtmosphere(grid_shape=(512, 512), gamma=101.2, beta=0.8, delta=90.0,
+                                      encoding="grid", source="free", bounds="clamp")
 
-degradation_operators = {
-    2: ExtendedPSFOperator(fwhm=2.0, epsilon=0.20, kernel_size=11)
+# Hinode/SP PSF; for SO/PHI-HRT, reprojection onto its pixels, PSF core and stray light (fixed)
+warp = SparseWarpOperator.from_file("phi_native_warp.npz")
+degradation = {
+    1: SpatialPSFOperator(kernel=torch.from_numpy(psf_hinode), method="fft", padding_mode="reflect"),
+    2: ComposeOperator(warp, ExtendedPSFOperator(fwhm=2.5, epsilon=0.1, mean_source="post_psf",
+                                                 tune_fwhm=False, tune_epsilon=False,
+                                                 mask=torch.from_numpy(warp_valid))),
 }
 
-solver = StereoSolver(
-    atmosphere=atm,
-    problem1=prob1,
-    problem2=prob2,
-    lr=1e-2,
-    alpha=0.5,
-    degradation_operators=degradation_operators,
-)
-losses = solver.solve(n_iterations=1000)
+# Penalties enter as a function of the atmosphere, e.g. the spatial smoothness of the field
+def penalty(atm):
+    X = atm.to_stack()
+    return 1e-2 * sum(smoothness_loss(X[..., c] / 500.0, penalty="l2") for c in range(3)) / X[..., 0].numel()
+
+solver = StereoSolver(atmosphere, problem1, problem2, lr=1e-2, alpha=0.5,
+                      degradation_operators=degradation, penalty=penalty)
+losses = solver.solve(n_iterations=500, warmup=50)
+params = atmosphere.to_numpy_stack()     # (ny, nx, 15): field and both thermodynamic sets
 ```
 
-## Atmosphere Models
+The penalty on the part of the maps that the reprojection does not see (Appendix C of the paper) is
+`neural_me.regularization.nullspace.NullSpacePenalty`, added to the same `penalty` function.
+
+## Atmosphere models
+
+From `neural_me` (the per-pixel `SphericalAtmosphere` from `neural_me.core.atmospheres`):
 
 | Class | Description |
 |-------|-------------|
-| `CartesianAtmosphere` | Cartesian B-field (Blos, BQ, BU) — avoids angular periodicity |
+| `CartesianAtmosphere` | Cartesian B-field (Blos, BQ, BU), no angular periodicity |
+| `SphericalAtmosphere` | Spherical (B, γ, φ) |
 | `SphericalSoftplusAtmosphere` | Spherical (B, γ, φ) with softplus positivity on B |
-| `NFAtmosphere` | Neural field (implicit MLP) for single-instrument |
-| `StereoscopicAtmosphere` | Shared B-field with per-instrument thermodynamics |
-| `StereoscopicNFAtmosphere` | Neural field version of the stereoscopic model |
+| `NFAtmosphere` | Neural field, single instrument |
+| `StereoscopicAtmosphere` | Per pixel: shared B-field, thermodynamics per instrument |
+| `StereoscopicNFAtmosphere` | Neural field version of the stereoscopic model (`encoding="grid"` or `"fourier"`) |
 
 ## Solvers
 
-| Class | Description |
-|-------|-------------|
-| `PixelSolver` | Adam-based pixel-wise inversion |
-| `LevMarSolver` | Levenberg-Marquardt inversion |
-| `StereoSolver` | Stereoscopic inversion with optional degradation operators |
-
-## Degradation Operators
-
-All inherit from `DegradationOperator` and are passed to `StereoSolver`:
+From `neural_me` (`PixelSolver`) and `neural_me.optimization`:
 
 | Class | Description |
 |-------|-------------|
-| `StrayLightOperator` | Flat stray-light mixing: `(1-ε)·S + ε·⟨S⟩` |
-| `ExtendedPSFOperator` | Spatial PSF convolution + flat stray-light (learnable fwhm and ε) |
-| `TwoPSFOperator` | Sinjan et al. (2026) two-component PSF model |
+| `PixelSolver` | Adam, pixel by pixel |
+| `LevMarSolver` | Levenberg-Marquardt per pixel; `field="lqlu"` takes the step in (Blos, Lq, Lu), which does not stall in strong transverse fields |
+| `StereoSolver` | Stereoscopic inversion with degradation operators and penalties |
+
+## Degradation operators
+
+From `neural_me.optimization`; all inherit from `DegradationOperator` and are passed to `StereoSolver` per view:
+
+| Class | Description |
+|-------|-------------|
 | `SpatialPSFOperator` | Spatial 2D convolution (FFT or direct) |
-| `SpectralPSFOperator` | Spectral 1D convolution |
+| `ExtendedPSFOperator` | Spatial PSF + flat stray light (fwhm and ε fixed or learnable) |
+| `StrayLightOperator` | Flat stray light: `(1-ε)·S + ε·⟨S⟩` |
+| `TwoPSFOperator` | Two-component PSF of Sinjan et al. (2026) |
+| `SparseWarpOperator` | Reprojection onto the pixels of another instrument (sparse matrix) |
+| `ComposeOperator` | Chains operators, e.g. reprojection then PSF |
 | `WarpOperator` | Thin plate spline coordinate warping |
+| `SpectralPSFOperator` | Spectral 1D convolution |
 
-## Supported Spectral Lines
+With `backend="cpp"`, the spectral PSF is better given to `MEProblem(spectralPSF=..., spectral_step=...)`: the synthesis
+runs on a fine grid and a fixed matrix applies the profile, so the gradient stays a vector-Jacobian product. That path
+applies the profile as a correlation, as pyMilne does; `SpectralPSFOperator` applies it as a convolution, which differs
+for an asymmetric profile.
+
+## Supported spectral lines
 
 | ID | Element | λ₀ (Å) | g_eff | Instrument |
 |----|---------|--------|-------|------------|
@@ -125,61 +171,73 @@ All inherit from `DegradationOperator` and are passed to `StereoSolver`:
 | 6 | Fe I | 15648.5088 | 3.00 | |
 | 7 | Fe I | 6173.3356 | 2.50 | SDO/HMI, SolO/PHI |
 
-Lines are resolved by approximate wavelength: `MEProblem(line=6173)` → Line ID 7.
+Lines are resolved by approximate wavelength: `MEProblem(line=6173)` → line ID 7.
 
-## Project Structure
+## Project structure
 
 ```
 neural_me/
+├── external/pyMilne/           # C++ ME solver (submodule)
 ├── src/neural_me/
 │   ├── core/
-│   │   ├── atmospheres/        # CartesianAtmosphere, StereoscopicAtmosphere,
-│   │   │                       # NFAtmosphere, StereoscopicNFAtmosphere, ...
+│   │   ├── atmospheres/        # per-pixel, neural-field and stereoscopic atmospheres
+│   │   ├── nf.py               # neural fields: Fourier features, dense multiresolution grid (GridField)
 │   │   ├── observation.py      # Observation (Stokes data container)
 │   │   ├── problem.py          # MEProblem
-│   │   └── warp.py             # Thin plate spline warping
+│   │   ├── geometry.py         # local (heliographic) frame
+│   │   ├── coregistration.py   # co-registration helpers (WCS)
+│   │   ├── velocity.py         # velocity vector from two lines of sight
+│   │   └── warp.py             # thin plate spline warping
 │   ├── physics/
-│   │   ├── milne_eddington.py       # Pure-Python ME forward model
+│   │   ├── milne_eddington.py       # ME forward model
 │   │   ├── milne_eddington_torch.py # PyTorch ME forward model
-│   │   ├── milne_eddington_cpp/     # C++ ME backend (fast, CPU)
-│   │   ├── lineas.py           # Spectral line database
+│   │   ├── milne_eddington_cpp/     # C++ ME backend (built from external/pyMilne)
+│   │   ├── lineas.py           # spectral line database
 │   │   ├── zeeman.py           # Zeeman splitting
-│   │   ├── wfa.py              # Weak-field approximation
-│   │   └── cog.py              # Centre-of-gravity
+│   │   ├── wfa.py              # weak-field approximation
+│   │   └── cog.py              # centre of gravity
 │   ├── optimization/
 │   │   ├── pixel_solver.py     # PixelSolver (Adam)
 │   │   ├── levmar_solver.py    # LevMarSolver
 │   │   ├── stereo_solver.py    # StereoSolver
-│   │   └── degradation.py      # All DegradationOperator subclasses
-│   ├── instruments/            # PSF loading utilities
+│   │   ├── loss.py             # data terms
+│   │   └── degradation.py      # DegradationOperator subclasses
+│   ├── instruments/            # PSF and instrumental-profile resources
 │   ├── regularization/
-│   │   ├── spatial.py          # Spatial smoothing
-│   │   └── temporal.py         # Temporal regularization
-│   └── utils/
-│       ├── io.py               # FITS I/O
-│       ├── viz.py              # Plotting helpers
-│       └── misc.py             # Miscellaneous
-└── tests/                      # Unit, integration, regression, benchmarks
+│   │   ├── spatial.py          # spatial smoothness
+│   │   ├── nullspace.py        # null-space penalty of a degradation
+│   │   ├── priors.py           # priors on the parameters
+│   │   └── temporal.py         # temporal regularization
+│   └── utils/                  # FITS I/O, plotting, miscellaneous
+└── tests/                      # unit, integration, regression, benchmarks
 ```
 
 ## Citation
 
-If you use Neural ME in your research, please cite:
+If you use Neural ME in your research, please cite the papers that describe it:
 
 ```bibtex
-@software{neural_me,
-  author = {Díaz Baso, C. J.},
-  title = {Neural ME: Differentiable Milne-Eddington Inversions},
-  year = {2024},
-  url = {https://github.com/cdiazbas/neural_me}
+@article{DiazBaso2025_neuralwfa,
+  author  = {{D{\'\i}az Baso}, C. J. and {Asensio Ramos}, A. and {de la Cruz Rodr{\'\i}guez}, J. and
+             {da Silva Santos}, J. M. and {Rouppe van der Voort}, L.},
+  title   = {Exploring spectropolarimetric inversions using neural fields: Solar chromospheric magnetic field
+             under the weak-field approximation},
+  journal = {Astronomy \& Astrophysics},
+  year    = {2025},
+  volume  = {693},
+  pages   = {A170},
+  doi     = {10.1051/0004-6361/202452172}
 }
 ```
 
+and Díaz Baso et al., *Stereoscopic Milne-Eddington inversions of SO/PHI-HRT and Hinode/SP observations using neural
+fields* (in prep.). The C++ synthesis is that of pyMilne (de la Cruz Rodríguez 2019, A&A 631, A153).
+
 ## License
 
-BSD 3-Clause License. See [LICENSE.rst](LICENSE.rst) for details.
-
+MIT License. See [LICENSE](LICENSE).
 
 ## Development
 
-Contributions are welcome! Please open an issue or submit a pull request on GitHub. Remember to follow the code style and run "pre-commit run --all-files" before committing.
+Contributions are welcome! Please open an issue or submit a pull request on GitHub. Run `pre-commit run --all-files`
+before committing.
