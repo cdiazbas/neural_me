@@ -31,6 +31,9 @@ dependencies = [
 # neural_me.core.coregistration (reproject: the inverse warp). Optional:
 # the rotation math works without it, only the WCS-driven helpers need it.
 geometry = ["sunpy>=5.0", "reproject"]
+# Image-based co-registration without WCS (neural_me.core.coregistration.sampling_grid_from_images) and the
+# TPS alignment of neural_me.core.warp.
+registration = ["opencv-python-headless", "kornia"]
 # ISPy supplies the Gary & Hagyard reference implementation the geometry
 # cross-validation tests check against: https://github.com/ISP-SST/ISPy
 dev = [

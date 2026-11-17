@@ -27,6 +27,8 @@ from neural_me.core.coregistration import (
     pointing_map,
     instrument_map,
     model_grid_wcs,
+    sampling_grid_from_wcs,
+    sampling_grid_from_images,
     save_sampling_grid,
     reproject_to_model_grid,
 )
@@ -76,6 +78,8 @@ __all__ = [
     "pointing_map",
     "instrument_map",
     "model_grid_wcs",
+    "sampling_grid_from_wcs",
+    "sampling_grid_from_images",
     "save_sampling_grid",
     "reproject_to_model_grid",
     "view_los_vectors",

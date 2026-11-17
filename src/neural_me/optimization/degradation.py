@@ -465,6 +465,15 @@ class SparseWarpOperator(DegradationOperator):
         with np.load(path) as w:
             return cls(w["grid_sub" if footprint else "grid"], w["valid"], input_shape=input_shape)
 
+    @classmethod
+    def from_sampling(cls, sampling: dict, footprint: bool = True, input_shape: Optional[Tuple[int, int]] = None):
+        """From the dict of :func:`~neural_me.core.coregistration.sampling_grid_from_wcs` or
+        :func:`~neural_me.core.coregistration.sampling_grid_from_images`, without writing it to disk.
+        ``input_shape``: (ny, nx) of the model grid; default ``sampling['model_shape']``."""
+        if input_shape is None and "model_shape" in sampling:
+            input_shape = tuple(sampling["model_shape"])
+        return cls(sampling["grid_sub" if footprint else "grid"], sampling["valid"], input_shape=input_shape)
+
     def matrices(self, dtype: torch.dtype, device: torch.device):
         """A and Aᵀ in CSR, built once per dtype and device."""
         key = (dtype, device)

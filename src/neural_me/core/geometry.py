@@ -124,6 +124,7 @@ __all__ = [
     "local_vertical_matrix_from_map",
     "apply_local_vertical",
     "instrument_sampling_grid",
+    "sampling_grid_from_mapping",
 ]
 
 
@@ -410,16 +411,28 @@ def instrument_sampling_grid(instrument_map, model_wcs, model_shape, crop_shape=
         ``valid`` (H, W), the pixels whose centres lie inside the model grid without
         its margin and whose samples are all defined; ``r0``, ``c0``, the origin of the crop; ``footprint``,
         the median singular values of the Jacobian over the pixels on the grid: the
-        size of one pixel in model pixels along its major and minor axes.
+        size of one pixel in model pixels along its major and minor axes; ``model_shape``.
     """
     _require_sunpy()
-    ny_m, nx_m = model_shape
 
     def to_model(x, y):
         px, py = model_wcs.world_to_pixel(instrument_map.wcs.pixel_to_world(np.ravel(x), np.ravel(y)))
         return np.asarray(px).reshape(np.shape(x)), np.asarray(py).reshape(np.shape(y))
 
-    ny, nx = instrument_map.data.shape[-2:]
+    return sampling_grid_from_mapping(to_model, instrument_map.data.shape[-2:], model_shape, crop_shape, n_sub, margin)
+
+
+def sampling_grid_from_mapping(to_model, instrument_shape, model_shape, crop_shape=None, n_sub=3, margin=2):
+    """The sampling grid of :func:`instrument_sampling_grid` for any mapping of the instrument pixels onto the model.
+
+    ``to_model(x, y)`` takes arrays of instrument pixel coordinates (0-based, at pixel centres) and returns the model
+    pixel coordinates (mx, my) of the same shape, NaN where the point has no image. The WCS version passes the two WCS
+    through the solar sphere; :func:`~neural_me.core.coregistration.sampling_grid_from_images` passes a transform fitted
+    to the images. ``instrument_shape`` is (ny, nx) of the instrument image; the other arguments and the returned dict
+    are those of :func:`instrument_sampling_grid`.
+    """
+    ny_m, nx_m = model_shape
+    ny, nx = instrument_shape
     yy, xx = np.mgrid[0:ny, 0:nx]
     mx, my = to_model(xx, yy)
     with np.errstate(invalid="ignore"):
@@ -466,4 +479,5 @@ def instrument_sampling_grid(instrument_map, model_wcs, model_shape, crop_shape=
         "r0": r0,
         "c0": c0,
         "footprint": footprint,
+        "model_shape": (int(ny_m), int(nx_m)),
     }
