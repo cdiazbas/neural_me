@@ -116,6 +116,32 @@ params = atmosphere.to_numpy_stack()     # (ny, nx, 15): field and both thermody
 The penalty on the part of the maps that the reprojection does not see (Appendix C of the paper) is
 `neural_me.regularization.nullspace.NullSpacePenalty`, added to the same `penalty` function.
 
+### Co-registering two instruments: the reprojection operator
+
+`SparseWarpOperator` needs where each pixel of the second instrument falls on the model grid. Two functions of
+`neural_me.core.coregistration` compute it and return the same dict, read by `SparseWarpOperator.from_sampling`:
+
+```python
+from neural_me.core.coregistration import (pointing_map, instrument_map, model_grid_wcs,
+                                           sampling_grid_from_wcs, sampling_grid_from_images)
+from neural_me.optimization import SparseWarpOperator
+
+# With WCS (exact geometry through the solar sphere; correct the pointing by hand if needed)
+ref  = pointing_map(hinode_ic, center=(511.0, 329.0), scale=0.16, date_obs="2022-03-31T19:39:59")
+phi  = instrument_map(phi_l2_fits, crval=(-2464.626, 642.2178))
+grid = sampling_grid_from_wcs(phi, model_grid_wcs(ref, obstime=phi.date), (512, 512))
+
+# Without WCS (ORB + RANSAC on stretched copies of the instrument image, then a refinement)
+grid = sampling_grid_from_images(image_instrument, image_model)                  # similar images: ECC
+grid = sampling_grid_from_images(image_instrument, image_model, refine="nodes")  # very different views
+
+warp = SparseWarpOperator.from_sampling(grid)
+```
+
+Use the WCS whenever it exists. Without it, on SO/PHI-HRT against Hinode/SP (~100° apart), `refine="nodes"` stayed
+within 2.4 model pixels of the WCS mapping (median; 23 at the corners), with images of total polarization times
+continuum; see the docstring of `sampling_grid_from_images` for the measurements.
+
 ## Atmosphere models
 
 From `neural_me` (the per-pixel `SphericalAtmosphere` from `neural_me.core.atmospheres`):
